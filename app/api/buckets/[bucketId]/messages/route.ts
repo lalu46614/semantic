@@ -8,7 +8,15 @@ export async function GET(
   try {
     const { bucketId } = params;
     const messages = bucketStore.getMessages(bucketId);
-    return NextResponse.json({ messages });
+    const bucket = bucketStore.getBucket(bucketId);
+    
+    // Add bucketName to each message
+    const messagesWithBucketName = messages.map((msg) => ({
+      ...msg,
+      bucketName: bucket?.name || "Unknown",
+    }));
+    
+    return NextResponse.json({ messages: messagesWithBucketName });
   } catch (error) {
     console.error("Get messages error:", error);
     return NextResponse.json(

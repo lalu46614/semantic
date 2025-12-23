@@ -36,10 +36,6 @@ export function FileUpload({ bucketId, onFilesChange }: FileUploadProps) {
     e.preventDefault();
   };
 
-  if (!bucketId) {
-    return null;
-  }
-
   return (
     <div className="border-t p-2">
       <div

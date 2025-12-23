@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const message = formData.get("message") as string;
     const bucketId = formData.get("bucketId") as string | null;
+    const isVoice = formData.get("isVoice") === "true";
     const files = formData.getAll("files") as File[];
 
     if (!message) {
@@ -97,6 +98,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       response,
       bucketId: targetBucketId,
+      isVoice, // Pass through isVoice flag for client-side speech synthesis
     });
   } catch (error) {
     console.error("Chat API error:", error);

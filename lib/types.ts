@@ -17,6 +17,7 @@ export interface Bucket {
 export interface Message {
   id: string;
   bucketId: string;
+  bucketName?: string;
   content: string;
   role: "user" | "assistant";
   fileRefs: FileRef[];

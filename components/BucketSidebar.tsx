@@ -15,15 +15,14 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MessageListRef } from "@/components/MessageList";
 
 interface BucketSidebarProps {
-  selectedBucketId: string | null;
-  onBucketSelect: (bucketId: string | null) => void;
+  messageListRef: React.RefObject<MessageListRef>;
 }
 
 export function BucketSidebar({
-  selectedBucketId,
-  onBucketSelect,
+  messageListRef,
 }: BucketSidebarProps) {
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const [newBucketName, setNewBucketName] = useState("");
@@ -62,7 +61,12 @@ export function BucketSidebar({
         const data = await response.json();
         setNewBucketName("");
         setIsDialogOpen(false);
-        onBucketSelect(data.bucket.id);
+        // Scroll to the newly created bucket
+        if (messageListRef.current) {
+          setTimeout(() => {
+            messageListRef.current?.scrollToBucket(data.bucket.id);
+          }, 500);
+        }
         fetchBuckets();
       }
     } catch (error) {
@@ -82,13 +86,16 @@ export function BucketSidebar({
       });
 
       if (response.ok) {
-        if (selectedBucketId === bucketId) {
-          onBucketSelect(null);
-        }
         fetchBuckets();
       }
     } catch (error) {
       console.error("Error deleting bucket:", error);
+    }
+  };
+
+  const handleBucketClick = (bucketId: string) => {
+    if (messageListRef.current) {
+      messageListRef.current.scrollToBucket(bucketId);
     }
   };
 
@@ -143,12 +150,8 @@ export function BucketSidebar({
             buckets.map((bucket) => (
               <div
                 key={bucket.id}
-                className={`group relative mb-2 p-3 rounded-lg cursor-pointer transition-colors ${
-                  selectedBucketId === bucket.id
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-background hover:bg-accent"
-                }`}
-                onClick={() => onBucketSelect(bucket.id)}
+                className="group relative mb-2 p-3 rounded-lg cursor-pointer transition-colors bg-background hover:bg-accent"
+                onClick={() => handleBucketClick(bucket.id)}
               >
                 <div className="flex items-center gap-2">
                   <MessageSquare className="h-4 w-4 flex-shrink-0" />
@@ -158,11 +161,7 @@ export function BucketSidebar({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className={`h-6 w-6 opacity-0 group-hover:opacity-100 ${
-                      selectedBucketId === bucket.id
-                        ? "text-primary-foreground hover:bg-primary/80"
-                        : ""
-                    }`}
+                    className="h-6 w-6 opacity-0 group-hover:opacity-100"
                     onClick={(e) => handleDeleteBucket(bucket.id, e)}
                   >
                     <Trash2 className="h-3 w-3" />
