@@ -41,7 +41,7 @@ export async function routeMessage(
     model: modelName,
     generationConfig: {
       responseMimeType: "application/json",
-      responseSchema: ROUTING_SCHEMA,
+      responseSchema: ROUTING_SCHEMA as any,
     },
   });
 

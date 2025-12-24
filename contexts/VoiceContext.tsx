@@ -1,18 +1,33 @@
 "use client";
 
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect } from "react";
+import { FileRef } from "@/lib/types";
+
+interface TransientCaptions {
+  user: string;
+  ai: string;
+}
 
 interface VoiceContextType {
   isConnected: boolean;
   isListening: boolean;
   activeBucketId: string | null;
   lastVoiceMessageTimestamp: number | null;
+  isAmbientMode: boolean;
+  transientCaptions: TransientCaptions;
+  sideCards: FileRef[];
+  error: string | null;
   connect: () => void;
   disconnect: () => void;
   setListening: (listening: boolean) => void;
   setActiveBucketId: (bucketId: string | null) => void;
   markVoiceMessageSent: () => void;
   markTextMessageSent: () => void;
+  setAmbientMode: (mode: boolean) => void;
+  updateTransientCaptions: (captions: Partial<TransientCaptions>) => void;
+  addSideCard: (fileRef: FileRef) => void;
+  removeSideCard: (fileId: string) => void;
+  setError: (error: string | null) => void;
 }
 
 const VoiceContext = createContext<VoiceContextType | undefined>(undefined);
@@ -22,6 +37,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [isListening, setIsListening] = useState(false);
   const [activeBucketId, setActiveBucketId] = useState<string | null>(null);
   const [lastVoiceMessageTimestamp, setLastVoiceMessageTimestamp] = useState<number | null>(null);
+  const [isAmbientMode, setIsAmbientMode] = useState(false);
+  const [transientCaptions, setTransientCaptions] = useState<TransientCaptions>({ user: "", ai: "" });
+  const [sideCards, setSideCards] = useState<FileRef[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  // Auto-set ambient mode when connected
+  useEffect(() => {
+    if (isConnected) {
+      setIsAmbientMode(true);
+    } else {
+      setIsAmbientMode(false);
+      setTransientCaptions({ user: "", ai: "" });
+      setSideCards([]);
+    }
+  }, [isConnected]);
 
   const connect = () => {
     setIsConnected(true);
@@ -31,6 +61,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setIsConnected(false);
     setIsListening(false);
     setLastVoiceMessageTimestamp(null);
+    setIsAmbientMode(false);
+    setTransientCaptions({ user: "", ai: "" });
+    setSideCards([]);
+    setError(null);
   };
 
   const markVoiceMessageSent = () => {
@@ -47,6 +81,22 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setIsListening(listening);
   };
 
+  const setAmbientMode = (mode: boolean) => {
+    setIsAmbientMode(mode);
+  };
+
+  const updateTransientCaptions = (captions: Partial<TransientCaptions>) => {
+    setTransientCaptions((prev) => ({ ...prev, ...captions }));
+  };
+
+  const addSideCard = (fileRef: FileRef) => {
+    setSideCards((prev) => [...prev, fileRef]);
+  };
+
+  const removeSideCard = (fileId: string) => {
+    setSideCards((prev) => prev.filter((card) => card.id !== fileId));
+  };
+
   return (
     <VoiceContext.Provider
       value={{
@@ -54,12 +104,21 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         isListening,
         activeBucketId,
         lastVoiceMessageTimestamp,
+        isAmbientMode,
+        transientCaptions,
+        sideCards,
+        error,
         connect,
         disconnect,
         setListening,
         setActiveBucketId,
         markVoiceMessageSent,
         markTextMessageSent,
+        setAmbientMode,
+        updateTransientCaptions,
+        addSideCard,
+        removeSideCard,
+        setError,
       }}
     >
       {children}

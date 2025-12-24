@@ -7,6 +7,7 @@ import { MessageList, MessageListRef } from "@/components/MessageList";
 import { FileUpload } from "@/components/FileUpload";
 import { ContextHeader } from "@/components/ContextHeader";
 import { useVoice } from "@/contexts/VoiceContext";
+import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
 import { Send, Loader2 } from "lucide-react";
 
 interface ChatAreaProps {
@@ -21,8 +22,9 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
   const [currentContext, setCurrentContext] = useState<string | null>(null);
   const internalMessageListRef = useRef<MessageListRef>(null);
   const refToUse = messageListRef || internalMessageListRef;
-  const { setActiveBucketId, isConnected, markTextMessageSent } = useVoice();
+  const { setActiveBucketId, isConnected, markTextMessageSent, activeBucketId } = useVoice();
   const [buckets, setBuckets] = useState<any[]>([]);
+  const { sendChunk: sendElevenLabsChunk } = useElevenLabsTTS({ enabled: isConnected });
 
   // Fetch buckets to derive bucketId from bucketName
   useEffect(() => {
@@ -69,8 +71,10 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
     const messageToSend = message;
     const filesToSend = selectedFiles;
     
-    // Mark that a text message was sent (prevents voice synthesis for this reply)
-    markTextMessageSent();
+    // Only mark text message sent if NOT in Connect mode (to allow TTS in Connect mode)
+    if (!isConnected) {
+      markTextMessageSent();
+    }
     
     setMessage("");
     setSelectedFiles([]);
@@ -83,20 +87,83 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
         formData.append("files", file);
       });
 
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        body: formData,
-      });
+      // In Connect mode, use activeBucketId and streaming endpoint
+      if (isConnected && activeBucketId) {
+        formData.append("bucketId", activeBucketId);
+        formData.append("isVoice", "true");
 
-      const data = await response.json();
+        // Use streaming endpoint for Connect mode
+        const response = await fetch("/api/chat/stream", {
+          method: "POST",
+          body: formData,
+        });
 
-      if (data.clarification) {
-        // Handle clarification request
-        alert(data.clarification);
-      } else if (data.error) {
-        alert(`Error: ${data.error}`);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        // Read SSE stream
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullResponse = "";
+
+        if (!reader) {
+          throw new Error("No response body");
+        }
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                
+                if (data.type === "chunk" && data.text) {
+                  fullResponse += data.text;
+                  
+                  // Forward chunk to ElevenLabs immediately
+                  sendElevenLabsChunk(data.text, false);
+                } else if (data.type === "done") {
+                  // Send final chunk to ElevenLabs
+                  if (fullResponse.trim()) {
+                    sendElevenLabsChunk("", true); // Trigger generation
+                  }
+                  // Message is already saved to bucket history by backend
+                } else if (data.type === "error") {
+                  alert(`Error: ${data.error || "Streaming failed"}`);
+                } else if (data.clarification) {
+                  alert(data.clarification);
+                }
+              } catch (e) {
+                console.error("Error parsing SSE data:", e);
+              }
+            }
+          }
+        }
+      } else {
+        // Normal mode - use regular endpoint
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await response.json();
+
+        if (data.clarification) {
+          // Handle clarification request
+          alert(data.clarification);
+        } else if (data.error) {
+          alert(`Error: ${data.error}`);
+        }
+        // Message is already added to the store, MessageList will update via polling
       }
-      // Message is already added to the store, MessageList will update via polling
     } catch (error) {
       console.error("Error sending message:", error);
       alert("Failed to send message. Please try again.");

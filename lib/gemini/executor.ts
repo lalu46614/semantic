@@ -94,3 +94,79 @@ function getMimeType(filename: string): string {
   return mimeTypes[ext || ""] || "application/octet-stream";
 }
 
+export async function* executeMessageStream(
+  userInput: string,
+  bucketId: string,
+  fileRefs?: FileRef[]
+): AsyncGenerator<string, void, unknown> {
+  // Use gemini-2.5-flash (or gemini-1.5-flash as fallback via env var)
+  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+  });
+
+  // Fetch only messages and files for this bucket (strict isolation)
+  const messages = bucketStore.getMessages(bucketId);
+  const bucketFiles = bucketStore.getFiles(bucketId);
+  
+  // Include any fileRefs passed in the current request
+  const allFileRefs = fileRefs 
+    ? [...bucketFiles, ...fileRefs]
+    : bucketFiles;
+
+  // Build conversation history (only from this bucket)
+  const conversationHistory = messages.map((msg) => ({
+    role: msg.role === "user" ? "user" : "model",
+    parts: [{ text: msg.content }],
+  }));
+
+  // Prepare file parts if any files are attached
+  const fileParts: any[] = [];
+  
+  for (const fileRef of allFileRefs) {
+    try {
+      const filePath = path.join(process.cwd(), "public", fileRef.path);
+      if (fs.existsSync(filePath)) {
+        const fileData = fs.readFileSync(filePath);
+        const mimeType = getMimeType(fileRef.filename);
+        
+        fileParts.push({
+          inlineData: {
+            data: fileData.toString("base64"),
+            mimeType: mimeType,
+          },
+        });
+      }
+    } catch (error) {
+      console.error(`Error reading file ${fileRef.filename}:`, error);
+    }
+  }
+
+  // Construct the prompt with context
+  const contextPrompt = conversationHistory.length > 0
+    ? `Previous conversation context:\n${messages
+        .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+        .join("\n\n")}\n\n`
+    : "";
+
+  const fullPrompt = `${contextPrompt}User: ${userInput}`;
+
+  try {
+    // Prepare content parts
+    const contentParts: any[] = [{ text: fullPrompt }];
+    contentParts.push(...fileParts);
+
+    const stream = await model.generateContentStream(contentParts);
+    
+    for await (const chunk of stream.stream) {
+      const chunkText = chunk.text();
+      if (chunkText) {
+        yield chunkText;
+      }
+    }
+  } catch (error) {
+    console.error("Executor streaming error:", error);
+    throw new Error("Failed to generate streaming response. Please try again.");
+  }
+}
+
