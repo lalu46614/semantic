@@ -30,19 +30,24 @@ export function prepareForSpeech(text: string): string {
   // Remove headers (# Header -> Header)
   cleaned = cleaned.replace(/^#{1,6}\s+(.+)$/gm, "$1");
 
-  // Remove bold (**text** or __text__) -> text
+  // Remove bold (**text** or __text__) -> text (handle nested cases)
+  // Do this before removing list markers to handle nested formatting
   cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, "$1");
   cleaned = cleaned.replace(/__([^_]+)__/g, "$1");
 
   // Remove italic (*text* or _text_) -> text
-  cleaned = cleaned.replace(/\*([^*]+)\*/g, "$1");
-  cleaned = cleaned.replace(/_([^_]+)_/g, "$1");
+  // Match italic markers that are not part of bold or list markers
+  cleaned = cleaned.replace(/\*([^*\n]+)\*/g, "$1");
+  cleaned = cleaned.replace(/_([^_\n]+)_/g, "$1");
 
   // Remove strikethrough (~~text~~)
   cleaned = cleaned.replace(/~~([^~]+)~~/g, "$1");
 
-  // Remove list markers (-, *, +, 1., 2., etc.)
-  cleaned = cleaned.replace(/^[\s]*[-*+]\s+/gm, "");
+  // Remove list markers more aggressively (-, *, +, with any number of spaces)
+  // Handle patterns like "*   **text**" or "*   text" or "- text" or "+ text"
+  // Match: start of line, optional whitespace, list marker, one or more spaces/tabs
+  cleaned = cleaned.replace(/^[\s]*[-*+][\s\t]+/gm, "");
+  // Remove numbered list markers (1., 2., etc.)
   cleaned = cleaned.replace(/^\s*\d+\.\s+/gm, "");
 
   // Remove blockquotes (> text)
@@ -71,8 +76,8 @@ export function prepareForSpeech(text: string): string {
   cleaned = cleaned.replace(/\$(\d+(?:\.\d+)?)/g, "$1 dollars");
   cleaned = cleaned.replace(/\$/g, "dollars");
 
-  // + -> plus
-  cleaned = cleaned.replace(/\+/g, " plus ");
+  // + -> plus (but only if not part of a list marker that was already removed)
+  cleaned = cleaned.replace(/(?<!\s)\+(?!\s)/g, " plus ");
 
   // = -> equals
   cleaned = cleaned.replace(/=/g, " equals ");
@@ -83,8 +88,14 @@ export function prepareForSpeech(text: string): string {
   // > -> greater than
   cleaned = cleaned.replace(/>/g, " greater than ");
 
-  // Remove any remaining asterisks (from incomplete Markdown)
+  // Remove any remaining asterisks (from incomplete Markdown or artifacts)
+  // This catches any asterisks that weren't removed by previous steps
   cleaned = cleaned.replace(/\*/g, "");
+
+  // Remove any remaining list-like patterns that might have been missed
+  // Look for standalone asterisks, dashes, or plus signs at word boundaries
+  cleaned = cleaned.replace(/\s[-*+]\s/g, " ");
+  cleaned = cleaned.replace(/^\s*[-*+]+\s*/gm, "");
 
   // Normalize whitespace: collapse multiple spaces/newlines to single space
   cleaned = cleaned.replace(/\s+/g, " ");

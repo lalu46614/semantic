@@ -6,6 +6,7 @@ import { useVoice } from "@/contexts/VoiceContext";
 import { Phone } from "lucide-react";
 import { Bucket } from "@/lib/types";
 import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
+import { prepareForSpeech } from "@/lib/utils";
 
 interface VoiceConnectProps {
   currentBucketName: string | null;
@@ -360,8 +361,8 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
                 // Don't update caption with full text yet - wait for audio timing
                 // Just store the text for now
                 
-                // Forward chunk to ElevenLabs immediately
-                sendElevenLabsChunk(data.text, false);
+                // Forward chunk to ElevenLabs immediately (with cleanup for speech)
+                sendElevenLabsChunk(prepareForSpeech(data.text), false);
               } else if (data.type === "done") {
                 console.log("[VoiceConnect] Response complete, full length:", fullResponse.length);
                 // Send final chunk to ElevenLabs

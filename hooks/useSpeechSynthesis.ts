@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useVoice } from "@/contexts/VoiceContext";
 import { Message } from "@/lib/types";
+import { prepareForSpeech } from "@/lib/utils";
 
 interface UseSpeechSynthesisOptions {
   messages: Message[];
@@ -65,8 +66,8 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
       return; // Message is too old or came before voice message
     }
 
-    // Speak the latest assistant message
-    const utterance = new SpeechSynthesisUtterance(latestMessage.content);
+    // Speak the latest assistant message (with cleanup for speech)
+    const utterance = new SpeechSynthesisUtterance(prepareForSpeech(latestMessage.content));
     
     // Use default browser voice or try to find a natural-sounding voice
     const voices = speechSynthRef.current.getVoices();
