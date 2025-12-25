@@ -7,8 +7,6 @@ import { MessageList, MessageListRef } from "@/components/MessageList";
 import { FileUpload } from "@/components/FileUpload";
 import { ContextHeader } from "@/components/ContextHeader";
 import { useVoice } from "@/contexts/VoiceContext";
-import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
-import { prepareForSpeech } from "@/lib/utils";
 import { Send, Loader2 } from "lucide-react";
 
 interface ChatAreaProps {
@@ -25,7 +23,6 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
   const refToUse = messageListRef || internalMessageListRef;
   const { setActiveBucketId, isConnected, markTextMessageSent, activeBucketId, isAmbientMode } = useVoice();
   const [buckets, setBuckets] = useState<any[]>([]);
-  const { sendChunk: sendElevenLabsChunk } = useElevenLabsTTS({ enabled: isConnected });
 
   // Fetch buckets to derive bucketId from bucketName
   useEffect(() => {
@@ -129,14 +126,9 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
                 
                 if (data.type === "chunk" && data.text) {
                   fullResponse += data.text;
-                  
-                  // Forward chunk to ElevenLabs immediately (with cleanup for speech)
-                  sendElevenLabsChunk(prepareForSpeech(data.text), false);
+                  // Text inputs in ambient mode don't trigger speech responses
+                  // Only voice-initiated messages should be spoken
                 } else if (data.type === "done") {
-                  // Send final chunk to ElevenLabs
-                  if (fullResponse.trim()) {
-                    sendElevenLabsChunk("", true); // Trigger generation
-                  }
                   // Message is already saved to bucket history by backend
                 } else if (data.type === "error") {
                   alert(`Error: ${data.error || "Streaming failed"}`);
