@@ -32,6 +32,7 @@ export function useElevenLabsTTS({
   const [isConnected, setIsConnected] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const pendingChunksRef = useRef<string[]>([]);
+  const hasFinalChunkPendingRef = useRef<boolean>(false);
   
   // Audio timing tracking for caption synchronization
   const audioStartTimeRef = useRef<number | null>(null);
@@ -100,16 +101,41 @@ export function useElevenLabsTTS({
       if (elapsedTimeFrameRef.current) {
         cancelAnimationFrame(elapsedTimeFrameRef.current);
       }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
+      // Don't close AudioContext - keep it alive for the component lifetime
+      // Closing it would prevent any future audio playback
     };
   }, [onVolumeUpdate]);
 
   // Play audio chunk using Web Audio API
   const playAudioChunk = useCallback(async (audioData: ArrayBuffer, duration: number, format: string = "mp3") => {
-    if (!audioContextRef.current || !gainNodeRef.current) {
-      console.warn("playAudioChunk: AudioContext or GainNode not available");
+    // Recreate AudioContext if it's closed
+    if (!audioContextRef.current || audioContextRef.current.state === "closed") {
+      console.warn("playAudioChunk: AudioContext not available or closed, recreating...");
+      try {
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+          sampleRate: 44100
+        });
+        audioContextRef.current = audioContext;
+
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        analyserRef.current = analyser;
+
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = 1.0;
+        gainNodeRef.current = gainNode;
+
+        gainNode.connect(analyser);
+        analyser.connect(audioContext.destination);
+      } catch (error) {
+        console.error("playAudioChunk: Failed to recreate AudioContext:", error);
+        return;
+      }
+    }
+    
+    if (!gainNodeRef.current) {
+      console.warn("playAudioChunk: GainNode not available");
       return;
     }
 
@@ -119,8 +145,12 @@ export function useElevenLabsTTS({
       // Resume audio context if suspended
       if (audioContextRef.current.state === "suspended") {
         console.log(`[Audio] AudioContext is suspended, resuming...`);
-        await audioContextRef.current.resume();
-        console.log(`[Audio] AudioContext resumed, state: ${audioContextRef.current.state}`);
+        try {
+          await audioContextRef.current.resume();
+          console.log(`[Audio] AudioContext resumed, state: ${audioContextRef.current.state}`);
+        } catch (resumeError) {
+          console.error("[Audio] Error resuming AudioContext:", resumeError);
+        }
       }
 
       console.log(`[Audio] AudioContext state: ${audioContextRef.current.state}, sampleRate: ${audioContextRef.current.sampleRate}`);
@@ -169,9 +199,15 @@ export function useElevenLabsTTS({
       onChunkStart?.(audioBuffer.duration);
 
       console.log(`[Audio] Starting playback at ${startTime.toFixed(3)}s (currentTime: ${currentTime.toFixed(3)}s)`);
-      source.start(startTime);
-      nextPlayTimeRef.current = startTime + audioBuffer.duration;
-      console.log(`[Audio] Playback started, next chunk scheduled at ${nextPlayTimeRef.current.toFixed(3)}s`);
+      console.log(`[Audio] AudioContext state before start: ${audioContextRef.current.state}`);
+      try {
+        source.start(startTime);
+        nextPlayTimeRef.current = startTime + audioBuffer.duration;
+        console.log(`[Audio] Playback started, next chunk scheduled at ${nextPlayTimeRef.current.toFixed(3)}s`);
+      } catch (error) {
+        console.error("[Audio] Error starting source:", error);
+        throw error;
+      }
 
       // Start continuous elapsed time tracking
       const startElapsedTimeTracking = () => {
@@ -255,15 +291,16 @@ export function useElevenLabsTTS({
     }
 
     try {
-      const ws = new WebSocket(
-        `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=eleven_turbo_v2_5&xi-api-key=${apiKey}`
-      );
+      // Use API key directly in URL (no encoding needed for alphanumeric + underscore keys)
+      const trimmedApiKey = apiKey.trim();
+      const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=eleven_turbo_v2_5&xi-api-key=${trimmedApiKey}`;
+      const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         console.log("ElevenLabs WebSocket connected");
         setIsConnected(true);
 
-        // Send initial configuration
+        // Send initial configuration with API key in first message
         ws.send(
           JSON.stringify({
             text: " ",
@@ -274,8 +311,41 @@ export function useElevenLabsTTS({
             generation_config: {
               chunk_length_schedule: [120, 160, 250, 290],
             },
+            xi_api_key: trimmedApiKey, // API key required in first message
           })
         );
+
+        // Send any pending chunks that were queued before connection
+        if (pendingChunksRef.current.length > 0) {
+          const pending = pendingChunksRef.current.join(" ");
+          pendingChunksRef.current = [];
+          // Send text with try_trigger_generation: false
+          ws.send(
+            JSON.stringify({
+              text: pending,
+              try_trigger_generation: false,
+            })
+          );
+          // If final was pending, send it as a separate message to trigger generation
+          if (hasFinalChunkPendingRef.current) {
+            ws.send(
+              JSON.stringify({
+                text: "",
+                try_trigger_generation: true,
+              })
+            );
+            hasFinalChunkPendingRef.current = false;
+          }
+        } else if (hasFinalChunkPendingRef.current) {
+          // If only final chunk was pending (no text), send it
+          ws.send(
+            JSON.stringify({
+              text: "",
+              try_trigger_generation: true,
+            })
+          );
+          hasFinalChunkPendingRef.current = false;
+        }
       };
 
       ws.onmessage = async (event) => {
@@ -297,8 +367,19 @@ export function useElevenLabsTTS({
               hasAudio: !!data.audio, 
               isFinal: data.isFinal,
               format: data.format,
-              audioLength: data.audio ? data.audio.length : 0
+              audioLength: data.audio ? data.audio.length : 0,
+              error: data.error,
+              status: data.status,
+              message: data.message
             });
+            
+            // Log if there's an error or status message
+            if (data.error) {
+              console.error("[ElevenLabs] Error in response:", data.error, data.message || "");
+            }
+            if (data.status && !data.audio) {
+              console.log("[ElevenLabs] Status message:", data.status);
+            }
             
             if (data.audio && audioContextRef.current) {
               // Decode base64 audio
@@ -398,6 +479,7 @@ export function useElevenLabsTTS({
     setIsPlaying(false);
     isPlayingRef.current = false;
     pendingChunksRef.current = [];
+    hasFinalChunkPendingRef.current = false;
     audioQueueRef.current = [];
     
     // Stop current playback
@@ -426,6 +508,9 @@ export function useElevenLabsTTS({
         // Queue chunk if not connected yet
         if (text.trim()) {
           pendingChunksRef.current.push(text);
+        }
+        if (isFinal) {
+          hasFinalChunkPendingRef.current = true;
         }
         if (!isConnected) {
           connect();

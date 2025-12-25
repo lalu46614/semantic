@@ -22,8 +22,9 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
   }, []);
 
   useEffect(() => {
-    if (!enabled || !isConnected || !speechSynthRef.current) {
-      // Cancel any ongoing speech when disabled or disconnected
+    // Disable TTS during voice mode - VoiceConnect handles it via ElevenLabs
+    if (!enabled || isConnected) {
+      // Cancel any ongoing speech when disabled or during voice mode
       if (speechSynthRef.current && speechSynthRef.current.speaking) {
         speechSynthRef.current.cancel();
       }
@@ -46,11 +47,6 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
       return;
     }
 
-    // Skip if there's already speech in progress
-    if (speechSynthRef.current.speaking) {
-      return;
-    }
-
     // Only speak if this is a response to a voice-initiated message
     // Check if there was a voice message sent recently (within last 30 seconds)
     // and the assistant message came after it
@@ -66,40 +62,48 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
       return; // Message is too old or came before voice message
     }
 
-    // Speak the latest assistant message (with cleanup for speech)
-    const utterance = new SpeechSynthesisUtterance(prepareForSpeech(latestMessage.content));
-    
-    // Use default browser voice or try to find a natural-sounding voice
-    const voices = speechSynthRef.current.getVoices();
-    const preferredVoice = voices.find(
-      (voice) =>
-        voice.lang.includes("en") &&
-        (voice.name.includes("Natural") ||
-          voice.name.includes("Neural") ||
-          voice.name.includes("Premium"))
-    );
-    if (preferredVoice) {
-      utterance.voice = preferredVoice;
-    } else if (voices.length > 0) {
-      utterance.voice = voices.find((v) => v.lang.includes("en")) || voices[0];
-    }
+    // Use browser TTS (ElevenLabs is handled by VoiceConnect during voice mode)
+    if (speechSynthRef.current) {
+      // Skip if there's already speech in progress
+      if (speechSynthRef.current.speaking) {
+        return;
+      }
 
-    utterance.lang = "en-US";
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
+      // Speak the latest assistant message (with cleanup for speech)
+      const utterance = new SpeechSynthesisUtterance(prepareForSpeech(latestMessage.content));
+      
+      // Use default browser voice or try to find a natural-sounding voice
+      const voices = speechSynthRef.current.getVoices();
+      const preferredVoice = voices.find(
+        (voice) =>
+          voice.lang.includes("en") &&
+          (voice.name.includes("Natural") ||
+            voice.name.includes("Neural") ||
+            voice.name.includes("Premium"))
+      );
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      } else if (voices.length > 0) {
+        utterance.voice = voices.find((v) => v.lang.includes("en")) || voices[0];
+      }
 
-    utterance.onend = () => {
+      utterance.lang = "en-US";
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+
+      utterance.onend = () => {
+        lastSpokenMessageId.current = latestMessage.id;
+      };
+
+      utterance.onerror = (error) => {
+        console.error("Speech synthesis error:", error);
+        lastSpokenMessageId.current = latestMessage.id; // Mark as processed to avoid retries
+      };
+
+      speechSynthRef.current.speak(utterance);
       lastSpokenMessageId.current = latestMessage.id;
-    };
-
-    utterance.onerror = (error) => {
-      console.error("Speech synthesis error:", error);
-      lastSpokenMessageId.current = latestMessage.id; // Mark as processed to avoid retries
-    };
-
-    speechSynthRef.current.speak(utterance);
-    lastSpokenMessageId.current = latestMessage.id;
+    }
   }, [messages, isConnected, enabled, lastVoiceMessageTimestamp]);
 
   // Cleanup: cancel speech on unmount or when disconnected
@@ -112,10 +116,10 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
   }, []);
 
   useEffect(() => {
-    // Cancel speech when disconnecting
-    if (!isConnected && speechSynthRef.current && speechSynthRef.current.speaking) {
+    // Cancel speech when voice mode connects (VoiceConnect handles TTS during voice mode)
+    if (isConnected && speechSynthRef.current && speechSynthRef.current.speaking) {
       speechSynthRef.current.cancel();
-      lastSpokenMessageId.current = null; // Reset so we can speak again when reconnecting
+      lastSpokenMessageId.current = null; // Reset so we can speak again when voice mode disconnects
     }
   }, [isConnected]);
 }
