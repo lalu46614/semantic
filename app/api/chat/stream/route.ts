@@ -82,6 +82,7 @@ export async function POST(request: NextRequest) {
       content: message,
       role: "user",
       fileRefs,
+      isVoice: isVoice || false,
     });
 
     // Create a ReadableStream for SSE

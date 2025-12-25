@@ -7,7 +7,7 @@ import { MessageListRef } from "@/components/MessageList";
 import { VoiceProvider, useVoice } from "@/contexts/VoiceContext";
 import { VoiceConnect } from "@/components/VoiceConnect";
 import { AmbientMode } from "@/components/AmbientMode";
-import { FloatingChatOverlay } from "@/components/FloatingChatOverlay";
+import { AmbientChatSidebar } from "@/components/AmbientChatSidebar";
 
 function MainContent() {
   const messageListRef = useRef<MessageListRef>(null);
@@ -34,7 +34,7 @@ function MainContent() {
     return (
       <>
         <AmbientMode />
-        <FloatingChatOverlay 
+        <AmbientChatSidebar 
           messageListRef={messageListRef} 
           onBucketNameChange={setCurrentBucketName} 
         />

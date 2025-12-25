@@ -5,21 +5,38 @@ import { useEffect, useRef, useState, useCallback } from "react";
 interface UseElevenLabsTTSOptions {
   enabled?: boolean;
   onVolumeUpdate?: (volume: number) => void;
+  onAudioStart?: () => void;
+  onAudioEnd?: () => void;
+  onChunkStart?: (duration: number) => void;
+  onChunkEnd?: () => void;
 }
 
-export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLabsTTSOptions = {}) {
+export function useElevenLabsTTS({ 
+  enabled = true, 
+  onVolumeUpdate,
+  onAudioStart,
+  onAudioEnd,
+  onChunkStart,
+  onChunkEnd,
+}: UseElevenLabsTTSOptions = {}) {
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const audioQueueRef = useRef<ArrayBuffer[]>([]);
+  const elapsedTimeFrameRef = useRef<number | null>(null);
+  const audioQueueRef = useRef<Array<{ buffer: ArrayBuffer; duration: number }>>([]);
   const isPlayingRef = useRef(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
   const [isConnected, setIsConnected] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const pendingChunksRef = useRef<string[]>([]);
+  
+  // Audio timing tracking for caption synchronization
+  const audioStartTimeRef = useRef<number | null>(null);
+  const totalAudioDurationRef = useRef<number>(0);
+  const [currentElapsedTime, setCurrentElapsedTime] = useState(0);
 
   // Initialize audio context and analyser
   useEffect(() => {
@@ -80,6 +97,9 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
+      if (elapsedTimeFrameRef.current) {
+        cancelAnimationFrame(elapsedTimeFrameRef.current);
+      }
       if (audioContextRef.current) {
         audioContextRef.current.close();
       }
@@ -87,7 +107,7 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
   }, [onVolumeUpdate]);
 
   // Play audio chunk using Web Audio API
-  const playAudioChunk = useCallback(async (audioData: ArrayBuffer, format: string = "mp3") => {
+  const playAudioChunk = useCallback(async (audioData: ArrayBuffer, duration: number, format: string = "mp3") => {
     if (!audioContextRef.current || !gainNodeRef.current) {
       console.warn("playAudioChunk: AudioContext or GainNode not available");
       return;
@@ -139,20 +159,60 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
       const currentTime = audioContextRef.current.currentTime;
       const startTime = Math.max(currentTime, nextPlayTimeRef.current);
 
+      // Track audio start time for caption synchronization
+      if (audioStartTimeRef.current === null) {
+        audioStartTimeRef.current = startTime;
+        onAudioStart?.();
+      }
+
+      // Notify chunk start with duration
+      onChunkStart?.(audioBuffer.duration);
+
       console.log(`[Audio] Starting playback at ${startTime.toFixed(3)}s (currentTime: ${currentTime.toFixed(3)}s)`);
       source.start(startTime);
       nextPlayTimeRef.current = startTime + audioBuffer.duration;
       console.log(`[Audio] Playback started, next chunk scheduled at ${nextPlayTimeRef.current.toFixed(3)}s`);
 
+      // Start continuous elapsed time tracking
+      const startElapsedTimeTracking = () => {
+        const updateElapsedTime = () => {
+          if (audioContextRef.current && audioStartTimeRef.current !== null) {
+            const elapsed = audioContextRef.current.currentTime - audioStartTimeRef.current;
+            setCurrentElapsedTime(Math.max(0, elapsed));
+            
+            if (isPlayingRef.current || audioQueueRef.current.length > 0) {
+              elapsedTimeFrameRef.current = requestAnimationFrame(updateElapsedTime);
+            } else {
+              elapsedTimeFrameRef.current = null;
+            }
+          }
+        };
+        // Only start if not already tracking
+        if (elapsedTimeFrameRef.current === null) {
+          updateElapsedTime();
+        }
+      };
+      startElapsedTimeTracking();
+
       source.onended = () => {
         console.log(`[Audio] Chunk playback ended, queue length: ${audioQueueRef.current.length}`);
+        onChunkEnd?.();
+        
         if (audioQueueRef.current.length === 0) {
           setIsPlaying(false);
           isPlayingRef.current = false;
+          // Keep elapsed time tracking until explicitly reset
+          // Don't reset here - let it continue so captions can finish
+          setTimeout(() => {
+            audioStartTimeRef.current = null;
+            totalAudioDurationRef.current = 0;
+            setCurrentElapsedTime(0);
+          }, 100); // Small delay to allow final updates
+          onAudioEnd?.();
         } else {
           // Play next chunk in queue
           const nextChunk = audioQueueRef.current.shift()!;
-          playAudioChunk(nextChunk, format);
+          playAudioChunk(nextChunk.buffer, nextChunk.duration, format);
         }
       };
 
@@ -167,7 +227,7 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
       // Try next chunk in queue
       if (audioQueueRef.current.length > 0) {
         const nextChunk = audioQueueRef.current.shift()!;
-        playAudioChunk(nextChunk, format);
+        playAudioChunk(nextChunk.buffer, nextChunk.duration, format);
       }
     }
   }, []);
@@ -179,7 +239,7 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
     const chunk = audioQueueRef.current.shift()!;
     // Try to detect format from chunk or default to mp3
     // ElevenLabs typically sends MP3, but we'll try both
-    await playAudioChunk(chunk, "mp3");
+    await playAudioChunk(chunk.buffer, chunk.duration, "mp3");
   }, [playAudioChunk]);
 
   // Connect to ElevenLabs WebSocket
@@ -250,12 +310,29 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
           }
 
           if (arrayBuffer && audioContextRef.current) {
-            // Add to queue
-            audioQueueRef.current.push(arrayBuffer);
-            console.log(`[WebSocket] Added to audio queue, queue length: ${audioQueueRef.current.length}`);
-            
-            // Process queue if not already playing
-            processAudioQueue();
+            // Decode audio to get duration before queuing
+            try {
+              // Use existing audio context to decode
+              const audioBuffer = await audioContextRef.current.decodeAudioData(arrayBuffer.slice(0));
+              const duration = audioBuffer.duration;
+              
+              // Track total duration
+              totalAudioDurationRef.current += duration;
+              
+              // Add to queue with duration
+              audioQueueRef.current.push({ buffer: arrayBuffer, duration });
+              console.log(`[WebSocket] Added to audio queue, queue length: ${audioQueueRef.current.length}, duration: ${duration.toFixed(3)}s, total: ${totalAudioDurationRef.current.toFixed(3)}s`);
+              
+              // Process queue if not already playing
+              processAudioQueue();
+            } catch (error) {
+              console.error("[WebSocket] Error decoding audio for duration:", error);
+              // Estimate duration based on file size if decode fails (rough estimate: ~1KB per second for MP3)
+              const estimatedDuration = arrayBuffer.byteLength / 1000;
+              totalAudioDurationRef.current += estimatedDuration;
+              audioQueueRef.current.push({ buffer: arrayBuffer, duration: estimatedDuration });
+              processAudioQueue();
+            }
           }
 
           if (data?.isFinal) {
@@ -333,6 +410,13 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
       currentSourceRef.current = null;
     }
     nextPlayTimeRef.current = 0;
+    audioStartTimeRef.current = null;
+    totalAudioDurationRef.current = 0;
+    setCurrentElapsedTime(0);
+    if (elapsedTimeFrameRef.current) {
+      cancelAnimationFrame(elapsedTimeFrameRef.current);
+      elapsedTimeFrameRef.current = null;
+    }
   }, []);
 
   // Send text chunk to ElevenLabs
@@ -395,6 +479,19 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
     };
   }, [enabled, connect, disconnect]);
 
+  // Get total audio duration (sum of all queued chunks)
+  const getTotalDuration = useCallback(() => {
+    return totalAudioDurationRef.current;
+  }, []);
+
+  // Get current elapsed playback time
+  const getElapsedTime = useCallback(() => {
+    if (audioContextRef.current && audioStartTimeRef.current !== null) {
+      return Math.max(0, audioContextRef.current.currentTime - audioStartTimeRef.current);
+    }
+    return 0;
+  }, []);
+
   return {
     isConnected,
     isPlaying,
@@ -402,5 +499,8 @@ export function useElevenLabsTTS({ enabled = true, onVolumeUpdate }: UseElevenLa
     connect,
     disconnect,
     resumeAudioContext,
+    getTotalDuration,
+    getElapsedTime,
+    currentElapsedTime,
   };
 }

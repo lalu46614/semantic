@@ -35,7 +35,34 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
   const [transcript, setTranscript] = useState("");
   const recognitionRef = useRef<any>(null);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
-  const { sendChunk: sendElevenLabsChunk, resumeAudioContext } = useElevenLabsTTS({ enabled: isConnected });
+  const fullResponseRef = useRef<string>("");
+  const audioStartTimeRef = useRef<number | null>(null);
+  
+  const { 
+    sendChunk: sendElevenLabsChunk, 
+    resumeAudioContext,
+    getTotalDuration,
+  } = useElevenLabsTTS({ 
+    enabled: isConnected,
+    onAudioStart: () => {
+      // When audio starts, mark the start time for caption synchronization
+      audioStartTimeRef.current = Date.now();
+      console.log("[VoiceConnect] Audio playback started");
+    },
+    onAudioEnd: () => {
+      // When audio ends, keep caption visible briefly then clear
+      console.log("[VoiceConnect] Audio playback ended");
+      setTimeout(() => {
+        updateTransientCaptions({ 
+          ai: "", 
+          user: "",
+          aiWords: undefined,
+          aiWordTimings: undefined,
+          aiStartTime: undefined,
+        });
+      }, 3000); // Keep visible for 3 seconds after audio ends
+    },
+  });
 
   // Fetch buckets to derive bucketId from bucketName
   useEffect(() => {
@@ -264,7 +291,13 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       }
 
       // Clear AI caption at start, but keep user caption visible
-      updateTransientCaptions({ ai: "" });
+      fullResponseRef.current = "";
+      updateTransientCaptions({ 
+        ai: "",
+        aiWords: undefined,
+        aiWordTimings: undefined,
+        aiStartTime: undefined,
+      });
 
       // Check Content-Type to determine if it's JSON (clarification) or SSE stream
       const contentType = response.headers.get("Content-Type") || "";
@@ -318,12 +351,14 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
               
               if (data.type === "chunk" && data.text) {
                 fullResponse += data.text;
+                fullResponseRef.current = fullResponse;
                 console.log("[VoiceConnect] Received chunk:", data.text.substring(0, 50) + "...");
                 // Clear user caption when first response chunk arrives
                 if (fullResponse === data.text) {
                   updateTransientCaptions({ user: "" });
                 }
-                updateTransientCaptions({ ai: fullResponse });
+                // Don't update caption with full text yet - wait for audio timing
+                // Just store the text for now
                 
                 // Forward chunk to ElevenLabs immediately
                 sendElevenLabsChunk(data.text, false);
@@ -333,11 +368,53 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
                 if (fullResponse.trim()) {
                   sendElevenLabsChunk("", true); // Trigger generation
                 }
-                // Clear transient captions after message is saved to history
-                // Backend has already saved both user and AI messages at this point
-                setTimeout(() => {
-                  updateTransientCaptions({ ai: "", user: "" });
-                }, 1000); // Small delay to allow final audio to start
+                
+                // Calculate word timing when response is complete
+                // Wait a bit for audio duration to be calculated and audio to start
+                const calculateAndSetTimings = () => {
+                  const totalDuration = getTotalDuration();
+                  const words = splitIntoWords(fullResponse);
+                  
+                  if (words.length > 0 && totalDuration > 0) {
+                    // Calculate timing for each word
+                    const wordTimings = calculateWordTimings(words, totalDuration);
+                    // Use audio start time if available, otherwise use current time
+                    const startTime = audioStartTimeRef.current || Date.now();
+                    
+                    console.log(`[VoiceConnect] Calculated word timings: ${words.length} words, ${totalDuration.toFixed(2)}s total`);
+                    
+                    updateTransientCaptions({
+                      ai: fullResponse,
+                      aiWords: words,
+                      aiWordTimings: wordTimings,
+                      aiStartTime: startTime,
+                    });
+                  } else if (words.length > 0) {
+                    // If duration not available yet, estimate based on speaking rate
+                    // Average speaking rate: ~150 words per minute = 0.4 seconds per word
+                    const estimatedDuration = words.length * 0.4;
+                    const wordTimings = calculateWordTimings(words, estimatedDuration);
+                    const startTime = audioStartTimeRef.current || Date.now();
+                    
+                    console.log(`[VoiceConnect] Using estimated word timings: ${words.length} words, ${estimatedDuration.toFixed(2)}s estimated`);
+                    
+                    updateTransientCaptions({
+                      ai: fullResponse,
+                      aiWords: words,
+                      aiWordTimings: wordTimings,
+                      aiStartTime: startTime,
+                    });
+                  } else {
+                    // Fallback: show full text if no words
+                    updateTransientCaptions({ ai: fullResponse });
+                  }
+                };
+                
+                // Try immediately, then retry after a delay if duration not ready
+                calculateAndSetTimings();
+                setTimeout(calculateAndSetTimings, 1000); // Retry after 1 second
+                
+                // Clear transient captions after audio finishes (handled by audio end callback)
               } else if (data.type === "error") {
                 setError(`Error: ${data.error || "Streaming failed"}`);
               } else if (data.clarification) {
@@ -356,7 +433,14 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       console.error("[VoiceConnect] ===== Error sending voice message =====", error);
       setError("Failed to send message. Please try again.");
       // Clear captions on error
-      updateTransientCaptions({ ai: "", user: "" });
+      fullResponseRef.current = "";
+      updateTransientCaptions({ 
+        ai: "", 
+        user: "",
+        aiWords: undefined,
+        aiWordTimings: undefined,
+        aiStartTime: undefined,
+      });
     }
   };
 
@@ -391,6 +475,44 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       </Button>
     );
   }
+
+  // Helper function to split text into words while preserving spaces and punctuation
+  const splitIntoWords = (text: string): string[] => {
+    // Split by word boundaries but keep spaces and punctuation attached to words
+    const words: string[] = [];
+    const regex = /\S+/g;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      words.push(match[0]);
+    }
+    return words;
+  };
+
+  // Calculate timing for each word based on total duration
+  const calculateWordTimings = (words: string[], totalDuration: number): number[] => {
+    if (words.length === 0) return [];
+    
+    // Calculate average time per word
+    const avgTimePerWord = totalDuration / words.length;
+    
+    // Create timings array - each word gets its share of time
+    const timings: number[] = [];
+    let cumulativeTime = 0;
+    
+    for (let i = 0; i < words.length; i++) {
+      // Each word gets avgTimePerWord, but we can adjust for word length
+      // Longer words might take slightly more time
+      const wordLength = words[i].length;
+      const baseTime = avgTimePerWord;
+      const lengthAdjustment = (wordLength / 5) * 0.1; // Small adjustment based on length
+      const wordTime = baseTime + lengthAdjustment;
+      
+      timings.push(cumulativeTime);
+      cumulativeTime += wordTime;
+    }
+    
+    return timings;
+  };
 
   // When connected, the AmbientMode component handles the UI
   return null;

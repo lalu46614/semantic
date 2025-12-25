@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { X, AlertCircle } from "lucide-react";
 import { FileRef } from "@/lib/types";
 import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
+import { prepareForSpeech } from "@/lib/utils";
 
 export function AmbientMode() {
   const {
@@ -25,7 +26,7 @@ export function AmbientMode() {
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
   // Initialize ElevenLabs TTS with volume callback
-  const { sendChunk, isConnected: ttsConnected } = useElevenLabsTTS({
+  const { sendChunk, isConnected: ttsConnected, currentElapsedTime } = useElevenLabsTTS({
     enabled: true,
     onVolumeUpdate: setVolume,
   });
@@ -57,7 +58,7 @@ export function AmbientMode() {
 
             // Send verbal acknowledgment via ElevenLabs
             const ackText = "I've added that file to our session. Checking it now...";
-            sendChunk(ackText, true);
+            sendChunk(prepareForSpeech(ackText), true);
 
             // Auto-remove side card after 5 seconds
             setTimeout(() => {
@@ -139,6 +140,10 @@ export function AmbientMode() {
       <TransientCaptions
         userText={transientCaptions.user}
         aiText={transientCaptions.ai}
+        aiWords={transientCaptions.aiWords}
+        aiWordTimings={transientCaptions.aiWordTimings}
+        aiStartTime={transientCaptions.aiStartTime}
+        audioElapsedTime={currentElapsedTime}
       />
     </div>
   );

@@ -6,6 +6,9 @@ import { FileRef } from "@/lib/types";
 interface TransientCaptions {
   user: string;
   ai: string;
+  aiWords?: string[];
+  aiWordTimings?: number[];
+  aiStartTime?: number;
 }
 
 interface VoiceContextType {
@@ -38,7 +41,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const [activeBucketId, setActiveBucketId] = useState<string | null>(null);
   const [lastVoiceMessageTimestamp, setLastVoiceMessageTimestamp] = useState<number | null>(null);
   const [isAmbientMode, setIsAmbientMode] = useState(false);
-  const [transientCaptions, setTransientCaptions] = useState<TransientCaptions>({ user: "", ai: "" });
+  const [transientCaptions, setTransientCaptions] = useState<TransientCaptions>({ 
+    user: "", 
+    ai: "",
+    aiWords: undefined,
+    aiWordTimings: undefined,
+    aiStartTime: undefined,
+  });
   const [sideCards, setSideCards] = useState<FileRef[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,7 +57,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       setIsAmbientMode(true);
     } else {
       setIsAmbientMode(false);
-      setTransientCaptions({ user: "", ai: "" });
+      setTransientCaptions({ 
+        user: "", 
+        ai: "",
+        aiWords: undefined,
+        aiWordTimings: undefined,
+        aiStartTime: undefined,
+      });
       setSideCards([]);
     }
   }, [isConnected]);
@@ -62,7 +77,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     setIsListening(false);
     setLastVoiceMessageTimestamp(null);
     setIsAmbientMode(false);
-    setTransientCaptions({ user: "", ai: "" });
+    setTransientCaptions({ 
+      user: "", 
+      ai: "",
+      aiWords: undefined,
+      aiWordTimings: undefined,
+      aiStartTime: undefined,
+    });
     setSideCards([]);
     setError(null);
   };

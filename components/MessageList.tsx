@@ -10,6 +10,7 @@ import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 interface MessageListProps {
   onCurrentContextChange?: (bucketName: string | null) => void;
+  filterMode?: 'ambient' | 'all';
 }
 
 export interface MessageListRef {
@@ -17,7 +18,7 @@ export interface MessageListRef {
 }
 
 export const MessageList = forwardRef<MessageListRef, MessageListProps>(
-  ({ onCurrentContextChange }, ref) => {
+  ({ onCurrentContextChange, filterMode = 'all' }, ref) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const scrollRef = useRef<HTMLDivElement>(null);
     const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -25,6 +26,21 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
 
     // Integrate speech synthesis for voice responses
     useSpeechSynthesis({ messages, enabled: true });
+
+    // Filter messages for ambient mode
+    const filteredMessages = filterMode === 'ambient' 
+      ? messages.filter((msg, index) => {
+          if (msg.role === 'user') {
+            // Only show typed user messages (not voice)
+            return msg.isVoice !== true;
+          } else if (msg.role === 'assistant') {
+            // Only show AI responses if previous user message was typed
+            const prevUserMsg = messages.slice(0, index).reverse().find(m => m.role === 'user');
+            return prevUserMsg && prevUserMsg.isVoice !== true;
+          }
+          return false;
+        })
+      : messages;
 
     const fetchMessages = async () => {
       try {
@@ -63,13 +79,13 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
           }
         }
       }
-    }, [messages]);
+    }, [filteredMessages]);
 
     // Expose scrollToBucket function via ref
     useImperativeHandle(ref, () => ({
       scrollToBucket: (bucketId: string) => {
-        // Find first message with matching bucketId
-        const firstMessage = messages.find((msg) => msg.bucketId === bucketId);
+        // Find first message with matching bucketId in filtered messages
+        const firstMessage = filteredMessages.find((msg) => msg.bucketId === bucketId);
         if (firstMessage && scrollRef.current) {
           const messageElement = messageRefs.current.get(firstMessage.id);
           if (messageElement) {
@@ -82,11 +98,11 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
           }
         }
       },
-    }), [messages]);
+    }), [filteredMessages]);
 
     // Detect bucket switches and prepare dividers
     const renderMessagesWithDividers = () => {
-      if (messages.length === 0) {
+      if (filteredMessages.length === 0) {
         return (
           <div className="text-center text-muted-foreground py-8">
             No messages yet. Start a conversation!
@@ -97,7 +113,7 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
       const elements: React.ReactNode[] = [];
       let previousBucketId: string | null = null;
 
-      messages.forEach((message, index) => {
+      filteredMessages.forEach((message, index) => {
         // Check if bucket switched (only show divider for assistant messages)
         // We detect the switch when an assistant message has a different bucketId than the previous message
         if (

@@ -15,6 +15,7 @@ export async function executeMessage(
   const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const model = genAI.getGenerativeModel({
     model: modelName,
+    systemInstruction: "You are a conversational assistant. Always respond in natural, spoken prose. Never use Markdown formatting such as asterisks, hashtags, bullet points, code blocks, or headers. Write as if you are speaking directly to the user in a natural conversation. Use plain text only - no special formatting characters.",
   });
 
   // Fetch only messages and files for this bucket (strict isolation)
@@ -103,6 +104,7 @@ export async function* executeMessageStream(
   const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const model = genAI.getGenerativeModel({
     model: modelName,
+    systemInstruction: "You are a conversational assistant. Always respond in natural, spoken prose. Never use Markdown formatting such as asterisks, hashtags, bullet points, code blocks, or headers. Write as if you are speaking directly to the user in a natural conversation. Use plain text only - no special formatting characters.",
   });
 
   // Fetch only messages and files for this bucket (strict isolation)

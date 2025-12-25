@@ -22,6 +22,7 @@ export interface Message {
   role: "user" | "assistant";
   fileRefs: FileRef[];
   createdAt: Date;
+  isVoice?: boolean;
 }
 
 export interface FileRef {

@@ -8,6 +8,7 @@ import { FileUpload } from "@/components/FileUpload";
 import { ContextHeader } from "@/components/ContextHeader";
 import { useVoice } from "@/contexts/VoiceContext";
 import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
+import { prepareForSpeech } from "@/lib/utils";
 import { Send, Loader2 } from "lucide-react";
 
 interface ChatAreaProps {
@@ -22,7 +23,7 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
   const [currentContext, setCurrentContext] = useState<string | null>(null);
   const internalMessageListRef = useRef<MessageListRef>(null);
   const refToUse = messageListRef || internalMessageListRef;
-  const { setActiveBucketId, isConnected, markTextMessageSent, activeBucketId } = useVoice();
+  const { setActiveBucketId, isConnected, markTextMessageSent, activeBucketId, isAmbientMode } = useVoice();
   const [buckets, setBuckets] = useState<any[]>([]);
   const { sendChunk: sendElevenLabsChunk } = useElevenLabsTTS({ enabled: isConnected });
 
@@ -88,9 +89,10 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
       });
 
       // In Connect mode, use activeBucketId and streaming endpoint
+      // Note: Text messages typed in chat are NOT voice, even in ambient mode
       if (isConnected && activeBucketId) {
         formData.append("bucketId", activeBucketId);
-        formData.append("isVoice", "true");
+        formData.append("isVoice", "false"); // Text input is never voice
 
         // Use streaming endpoint for Connect mode
         const response = await fetch("/api/chat/stream", {
@@ -128,8 +130,8 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
                 if (data.type === "chunk" && data.text) {
                   fullResponse += data.text;
                   
-                  // Forward chunk to ElevenLabs immediately
-                  sendElevenLabsChunk(data.text, false);
+                  // Forward chunk to ElevenLabs immediately (with cleanup for speech)
+                  sendElevenLabsChunk(prepareForSpeech(data.text), false);
                 } else if (data.type === "done") {
                   // Send final chunk to ElevenLabs
                   if (fullResponse.trim()) {
@@ -149,6 +151,8 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
         }
       } else {
         // Normal mode - use regular endpoint
+        // Explicitly mark as non-voice for text messages
+        formData.append("isVoice", "false");
         const response = await fetch("/api/chat", {
           method: "POST",
           body: formData,
@@ -176,7 +180,11 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
     <div className="flex flex-col h-full overflow-hidden">
       <ContextHeader bucketName={currentContext} />
       <div className="flex-1 min-h-0 overflow-hidden relative">
-        <MessageList ref={refToUse} onCurrentContextChange={handleContextChange} />
+        <MessageList 
+          ref={refToUse} 
+          onCurrentContextChange={handleContextChange}
+          filterMode={isAmbientMode ? 'ambient' : 'all'}
+        />
       </div>
       <form onSubmit={handleSubmit} className="border-t flex-shrink-0 bg-background">
         <FileUpload bucketId={null} onFilesChange={setSelectedFiles} />
