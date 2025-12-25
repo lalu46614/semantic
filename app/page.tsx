@@ -5,6 +5,7 @@ import { BucketSidebar } from "@/components/BucketSidebar";
 import { ChatArea } from "@/components/ChatArea";
 import { MessageListRef } from "@/components/MessageList";
 import { VoiceProvider, useVoice } from "@/contexts/VoiceContext";
+import { TTSProvider } from "@/contexts/TTSContext";
 import { VoiceConnect } from "@/components/VoiceConnect";
 import { AmbientMode } from "@/components/AmbientMode";
 import { AmbientChatSidebar } from "@/components/AmbientChatSidebar";
@@ -65,9 +66,11 @@ function MainContent() {
 
 export default function Home() {
   return (
-    <VoiceProvider>
-      <MainContent />
-    </VoiceProvider>
+    <TTSProvider>
+      <VoiceProvider>
+        <MainContent />
+      </VoiceProvider>
+    </TTSProvider>
   );
 }
 

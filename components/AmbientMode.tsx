@@ -8,7 +8,7 @@ import { SideCard } from "@/components/SideCard";
 import { Button } from "@/components/ui/button";
 import { X, AlertCircle } from "lucide-react";
 import { FileRef } from "@/lib/types";
-import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
+import { useUnifiedTTS } from "@/hooks/useUnifiedTTS";
 import { prepareForSpeech } from "@/lib/utils";
 
 export function AmbientMode() {
@@ -25,8 +25,8 @@ export function AmbientMode() {
   const [isDragging, setIsDragging] = useState(false);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // Initialize ElevenLabs TTS with volume callback
-  const { sendChunk, isConnected: ttsConnected, currentElapsedTime } = useElevenLabsTTS({
+  // Initialize unified TTS with volume callback
+  const { sendChunk, isConnected: ttsConnected, currentElapsedTime, interrupt } = useUnifiedTTS({
     enabled: true,
     onVolumeUpdate: setVolume,
   });
@@ -56,7 +56,7 @@ export function AmbientMode() {
             const fileRef: FileRef = data.file;
             addSideCard(fileRef);
 
-            // Send verbal acknowledgment via ElevenLabs
+            // Send verbal acknowledgment via TTS
             const ackText = "I've added that file to our session. Checking it now...";
             sendChunk(prepareForSpeech(ackText), true);
 
@@ -99,7 +99,7 @@ export function AmbientMode() {
       )}
 
       {/* Ambient Sphere */}
-      <AmbientSphere volume={volume} />
+      <AmbientSphere volume={volume} onClick={interrupt} />
 
       {/* Side Cards */}
       {sideCards.length > 0 && (

@@ -3,9 +3,10 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { useVoice } from "@/contexts/VoiceContext";
+import { useTTS } from "@/contexts/TTSContext";
 import { Phone } from "lucide-react";
 import { Bucket } from "@/lib/types";
-import { useElevenLabsTTS } from "@/hooks/useElevenLabsTTS";
+import { useUnifiedTTS } from "@/hooks/useUnifiedTTS";
 import { prepareForSpeech } from "@/lib/utils";
 
 interface VoiceConnectProps {
@@ -38,12 +39,16 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const fullResponseRef = useRef<string>("");
   const audioStartTimeRef = useRef<number | null>(null);
+  const isAudioPlayingRef = useRef<boolean>(false);
   
+  const { ttsProvider, setTTSProvider } = useTTS();
   const { 
-    sendChunk: sendElevenLabsChunk, 
+    sendChunk, 
     resumeAudioContext,
     getTotalDuration,
-  } = useElevenLabsTTS({ 
+    isPlaying: isAudioPlaying,
+    interrupt,
+  } = useUnifiedTTS({ 
     enabled: isConnected,
     onAudioStart: () => {
       // When audio starts, mark the start time for caption synchronization
@@ -64,6 +69,13 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       }, 3000); // Keep visible for 3 seconds after audio ends
     },
   });
+
+  // Interrupt playback when switching providers
+  useEffect(() => {
+    if (isConnected && isAudioPlaying) {
+      interrupt();
+    }
+  }, [ttsProvider, isConnected, isAudioPlaying, interrupt]);
 
   // Fetch buckets to derive bucketId from bucketName
   useEffect(() => {
@@ -189,8 +201,8 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
     recognitionRef.current.onend = () => {
       console.log("[SpeechRecognition] Ended");
       setListening(false);
-      // Restart recognition if still connected
-      if (isConnected && recognitionRef.current) {
+      // Restart recognition if still connected and audio is not playing
+      if (isConnected && !isAudioPlayingRef.current && recognitionRef.current) {
         try {
           console.log("[SpeechRecognition] Restarting recognition...");
           recognitionRef.current.start();
@@ -198,6 +210,8 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
           console.warn("[SpeechRecognition] Could not restart (may already be starting):", error);
           // Ignore errors if recognition is already starting
         }
+      } else if (isAudioPlayingRef.current) {
+        console.log("[SpeechRecognition] Not restarting - audio is playing");
       }
     };
 
@@ -255,6 +269,67 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       setError(null);
     }
   }, [isConnected]);
+
+  // Pause speech recognition during audio playback to prevent feedback loop
+  useEffect(() => {
+    // Update ref to track audio playing state (used by onend handler)
+    isAudioPlayingRef.current = isAudioPlaying;
+
+    if (!recognitionRef.current || !isConnected) {
+      return;
+    }
+
+    const handleAudioPlaybackChange = async () => {
+      try {
+        if (isAudioPlaying) {
+          // Audio started playing - stop speech recognition to prevent feedback
+          console.log("[VoiceConnect] Audio playing - pausing speech recognition to prevent feedback");
+          try {
+            recognitionRef.current.stop();
+          } catch (error) {
+            // Ignore errors if already stopped
+            console.warn("[VoiceConnect] Error stopping recognition (may already be stopped):", error);
+          }
+        } else {
+          // Audio finished playing - restart speech recognition if still connected
+          if (isConnected) {
+            console.log("[VoiceConnect] Audio finished - resuming speech recognition");
+            // Add a small delay to ensure audio has fully stopped
+            await new Promise(resolve => setTimeout(resolve, 200));
+            try {
+              recognitionRef.current.start();
+            } catch (error: any) {
+              // Handle cases where recognition might already be running
+              if (error.name === "InvalidStateError") {
+                console.log("[VoiceConnect] Recognition may already be running");
+              } else {
+                console.warn("[VoiceConnect] Error restarting recognition:", error);
+                // Try restarting after a delay
+                setTimeout(() => {
+                  try {
+                    if (recognitionRef.current && isConnected && !isAudioPlayingRef.current) {
+                      recognitionRef.current.stop();
+                      setTimeout(() => {
+                        if (recognitionRef.current && isConnected && !isAudioPlayingRef.current) {
+                          recognitionRef.current.start();
+                        }
+                      }, 100);
+                    }
+                  } catch (retryError) {
+                    console.warn("[VoiceConnect] Retry restart failed:", retryError);
+                  }
+                }, 300);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error("[VoiceConnect] Error handling audio playback change:", error);
+      }
+    };
+
+    handleAudioPlaybackChange();
+  }, [isAudioPlaying, isConnected]);
 
   const sendMessage = async (messageText: string) => {
     if (!messageText.trim()) {
@@ -361,13 +436,13 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
                 // Don't update caption with full text yet - wait for audio timing
                 // Just store the text for now
                 
-                // Forward chunk to ElevenLabs immediately (with cleanup for speech)
-                sendElevenLabsChunk(prepareForSpeech(data.text), false);
+                // Forward chunk to TTS immediately (with cleanup for speech)
+                sendChunk(prepareForSpeech(data.text), false);
               } else if (data.type === "done") {
                 console.log("[VoiceConnect] Response complete, full length:", fullResponse.length);
-                // Send final chunk to ElevenLabs
+                // Send final chunk to TTS
                 if (fullResponse.trim()) {
-                  sendElevenLabsChunk("", true); // Trigger generation
+                  sendChunk("", true); // Trigger generation
                 }
                 
                 // Calculate word timing when response is complete
@@ -462,18 +537,34 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
     disconnect();
   };
 
+  const handleToggleTTS = () => {
+    const newProvider = ttsProvider === "native" ? "elevenlabs" : "native";
+    setTTSProvider(newProvider);
+  };
+
   // When connected, UI is handled by AmbientMode component
   // Only show connect button when not connected
   if (!isConnected) {
     return (
-      <Button
-        onClick={handleConnect}
-        variant="outline"
-        className="flex items-center gap-2"
-      >
-        <Phone className="h-4 w-4" />
-        Connect
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          onClick={handleToggleTTS}
+          variant="outline"
+          size="sm"
+          className="text-xs"
+          title={`Current: ${ttsProvider === "native" ? "Native" : "ElevenLabs"}. Click to switch.`}
+        >
+          TTS: {ttsProvider === "native" ? "Native" : "ElevenLabs"}
+        </Button>
+        <Button
+          onClick={handleConnect}
+          variant="outline"
+          className="flex items-center gap-2"
+        >
+          <Phone className="h-4 w-4" />
+          Connect
+        </Button>
+      </div>
     );
   }
 
