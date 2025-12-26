@@ -26,7 +26,7 @@ export function AmbientMode() {
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
   // Initialize unified TTS with volume callback
-  const { sendChunk, isConnected: ttsConnected, currentElapsedTime, interrupt } = useUnifiedTTS({
+  const { sendChunk, isConnected: ttsConnected, currentElapsedTime } = useUnifiedTTS({
     enabled: true,
     onVolumeUpdate: setVolume,
   });
@@ -99,7 +99,7 @@ export function AmbientMode() {
       )}
 
       {/* Ambient Sphere */}
-      <AmbientSphere volume={volume} onClick={interrupt} />
+      <AmbientSphere volume={volume} />
 
       {/* Side Cards */}
       {sideCards.length > 0 && (

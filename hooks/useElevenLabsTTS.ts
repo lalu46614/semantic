@@ -469,40 +469,10 @@ export function useElevenLabsTTS({
     }
   }, []);
 
-  // Interrupt current audio playback (stops playback and clears queue, but keeps WebSocket connected)
+  // Interrupt function - disabled (no-op) to prevent stopping TTS playback
   const interrupt = useCallback(() => {
-    console.log("[Audio] Interrupting audio playback");
-    
-    // Stop current playback
-    if (currentSourceRef.current) {
-      try {
-        currentSourceRef.current.stop();
-      } catch (e) {
-        // Ignore errors if already stopped
-      }
-      currentSourceRef.current = null;
-    }
-    
-    // Clear audio queue
-    audioQueueRef.current = [];
-    
-    // Reset playback state
-    setIsPlaying(false);
-    isPlayingRef.current = false;
-    
-    // Reset timing refs
-    nextPlayTimeRef.current = 0;
-    audioStartTimeRef.current = null;
-    totalAudioDurationRef.current = 0;
-    setCurrentElapsedTime(0);
-    
-    // Cancel elapsed time tracking
-    if (elapsedTimeFrameRef.current) {
-      cancelAnimationFrame(elapsedTimeFrameRef.current);
-      elapsedTimeFrameRef.current = null;
-    }
-    
-    console.log("[Audio] Audio playback interrupted");
+    // No-op: Interruption functionality has been disabled
+    // TTS will continue playing even when this function is called
   }, []);
 
   // Disconnect from WebSocket

@@ -4,14 +4,12 @@ import { useEffect, useRef } from "react";
 
 interface AmbientSphereProps {
   volume: number; // 0-1 normalized volume
-  onClick?: () => void; // Callback for when sphere is clicked
 }
 
-export function AmbientSphere({ volume, onClick }: AmbientSphereProps) {
+export function AmbientSphere({ volume }: AmbientSphereProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const animationRef = useRef<number | null>(null);
   const filterRef = useRef<SVGFilterElement | null>(null);
-  const gradientRef = useRef<SVGRadialGradientElement | null>(null);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -19,7 +17,6 @@ export function AmbientSphere({ volume, onClick }: AmbientSphereProps) {
     const svg = svgRef.current;
     const circle = svg.querySelector("circle") as SVGCircleElement;
     filterRef.current = svg.querySelector("#glow") as SVGFilterElement;
-    gradientRef.current = svg.querySelector("#sphereGradient") as SVGRadialGradientElement;
     
     if (!circle) return;
 
@@ -57,22 +54,6 @@ export function AmbientSphere({ volume, onClick }: AmbientSphereProps) {
         }
       }
 
-      // Volume-based color saturation and intensity
-      if (gradientRef.current) {
-        const stops = gradientRef.current.querySelectorAll("stop");
-        if (stops.length >= 3) {
-          // Increase color intensity with volume
-          const intensity = 0.6 + smoothedVolume * 0.4; // 0.6 to 1.0
-          
-          // Center stop (most intense)
-          stops[0].setAttribute("stop-color", `rgba(59, 130, 246, ${0.6 + smoothedVolume * 0.4})`);
-          // Mid stop
-          stops[1].setAttribute("stop-color", `rgba(99, 102, 241, ${0.4 + smoothedVolume * 0.4})`);
-          // Outer stop
-          stops[2].setAttribute("stop-color", `rgba(139, 92, 246, ${0.2 + smoothedVolume * 0.3})`);
-        }
-      }
-
       // Subtle SVG-level pulse for overall effect
       const svgPulse = 1 + Math.sin(time / 600) * 0.05 * smoothedVolume;
       svg.style.transform = `scale(${svgPulse})`;
@@ -98,16 +79,9 @@ export function AmbientSphere({ volume, onClick }: AmbientSphereProps) {
         width="400"
         height="400"
         viewBox="0 0 400 400"
-        className="transition-transform duration-75 pointer-events-auto"
-        onClick={onClick}
-        style={{ cursor: onClick ? 'pointer' : 'default' }}
+        className="transition-transform duration-75 pointer-events-none"
       >
         <defs>
-          <radialGradient id="sphereGradient" cx="50%" cy="50%">
-            <stop offset="0%" stopColor="rgba(59, 130, 246, 0.8)" />
-            <stop offset="50%" stopColor="rgba(99, 102, 241, 0.6)" />
-            <stop offset="100%" stopColor="rgba(139, 92, 246, 0.4)" />
-          </radialGradient>
           <filter id="glow">
             <feGaussianBlur stdDeviation="4" result="coloredBlur" />
             <feMerge>
@@ -120,7 +94,7 @@ export function AmbientSphere({ volume, onClick }: AmbientSphereProps) {
           cx="200"
           cy="200"
           r="150"
-          fill="url(#sphereGradient)"
+          fill="transparent"
           filter="url(#glow)"
           className="transition-all duration-75"
           style={{ transformOrigin: "200px 200px" }}

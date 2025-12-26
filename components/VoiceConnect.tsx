@@ -61,6 +61,7 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
   } = useVoice();
   const [transcript, setTranscript] = useState("");
   const recognitionRef = useRef<any>(null);
+  const isRecognitionStartingRef = useRef<boolean>(false);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
   const fullResponseRef = useRef<string>("");
   const audioStartTimeRef = useRef<number | null>(null);
@@ -72,7 +73,6 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
     resumeAudioContext,
     getTotalDuration,
     isPlaying: isAudioPlaying,
-    interrupt,
   } = useUnifiedTTS({ 
     enabled: isConnected,
     onAudioStart: () => {
@@ -95,12 +95,7 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
     },
   });
 
-  // Interrupt playback when switching providers
-  useEffect(() => {
-    if (isConnected && isAudioPlaying) {
-      interrupt();
-    }
-  }, [ttsProvider, isConnected, isAudioPlaying, interrupt]);
+  // Note: Removed interrupt when switching providers - TTS will continue playing
 
   // Fetch buckets to derive bucketId from bucketName
   useEffect(() => {
@@ -253,9 +248,16 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
 
   // Handle connect/disconnect
   useEffect(() => {
-    if (isConnected && recognitionRef.current) {
+    if (isConnected && recognitionRef.current && !isRecognitionStartingRef.current) {
       // Add a small delay to ensure AudioContext is ready
       const startRecognition = async () => {
+        // Prevent duplicate starts (e.g., from React strict mode)
+        if (isRecognitionStartingRef.current) {
+          console.log("[VoiceConnect] Recognition start already in progress, skipping");
+          return;
+        }
+        
+        isRecognitionStartingRef.current = true;
         try {
           // Wait a bit for AudioContext to be ready
           await new Promise(resolve => setTimeout(resolve, 300));
@@ -263,21 +265,18 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
           recognitionRef.current.start();
           console.log("[VoiceConnect] Speech recognition start() called");
         } catch (error: any) {
-          console.error("[VoiceConnect] Failed to start recognition:", error);
           if (error.name === "InvalidStateError") {
-            // Recognition might already be running, try to restart
-            console.log("[VoiceConnect] Recognition may already be running, attempting restart...");
-            try {
-              recognitionRef.current.stop();
-              await new Promise(resolve => setTimeout(resolve, 100));
-              recognitionRef.current.start();
-            } catch (retryError) {
-              console.error("[VoiceConnect] Retry failed:", retryError);
-              setError("Failed to start speech recognition. Please try disconnecting and reconnecting.");
-            }
+            // Recognition is already running, this is fine - just log and continue
+            console.log("[VoiceConnect] Recognition already running, skipping start");
           } else {
+            console.error("[VoiceConnect] Failed to start recognition:", error);
             setError("Failed to start speech recognition.");
           }
+        } finally {
+          // Reset the flag after a delay to allow for the start to complete
+          setTimeout(() => {
+            isRecognitionStartingRef.current = false;
+          }, 500);
         }
       };
       startRecognition();

@@ -23,11 +23,8 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
 
   useEffect(() => {
     // Disable TTS during voice mode - VoiceConnect handles it via ElevenLabs
+    // Note: Removed cancel() call - speech will continue playing
     if (!enabled || isConnected) {
-      // Cancel any ongoing speech when disabled or during voice mode
-      if (speechSynthRef.current && speechSynthRef.current.speaking) {
-        speechSynthRef.current.cancel();
-      }
       return;
     }
 
@@ -106,21 +103,7 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
     }
   }, [messages, isConnected, enabled, lastVoiceMessageTimestamp]);
 
-  // Cleanup: cancel speech on unmount or when disconnected
-  useEffect(() => {
-    return () => {
-      if (speechSynthRef.current && speechSynthRef.current.speaking) {
-        speechSynthRef.current.cancel();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    // Cancel speech when voice mode connects (VoiceConnect handles TTS during voice mode)
-    if (isConnected && speechSynthRef.current && speechSynthRef.current.speaking) {
-      speechSynthRef.current.cancel();
-      lastSpokenMessageId.current = null; // Reset so we can speak again when voice mode disconnects
-    }
-  }, [isConnected]);
+  // Note: Removed cancel() calls - speech will continue playing even when unmounting or connecting
+  // This ensures TTS is never interrupted
 }
 

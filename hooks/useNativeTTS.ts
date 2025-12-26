@@ -208,36 +208,13 @@ export function useNativeTTS({
     [enabled, isPlaying, processQueue]
   );
 
-  // Interrupt current playback
+  // Interrupt function - disabled (no-op) to prevent stopping TTS playback
   const interrupt = useCallback(() => {
-    if (speechSynthRef.current) {
-      speechSynthRef.current.cancel();
-    }
-    utteranceQueueRef.current = [];
-    currentUtteranceRef.current = null;
-    isProcessingQueueRef.current = false;
-    setIsPlaying(false);
-    audioStartTimeRef.current = null;
-    setCurrentElapsedTime(0);
-    if (elapsedTimeFrameRef.current) {
-      cancelAnimationFrame(elapsedTimeFrameRef.current);
-      elapsedTimeFrameRef.current = null;
-    }
+    // No-op: Interruption functionality has been disabled
+    // TTS will continue playing even when this function is called
   }, []);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      interrupt();
-    };
-  }, [interrupt]);
-
-  // Cleanup when disabled
-  useEffect(() => {
-    if (!enabled) {
-      interrupt();
-    }
-  }, [enabled, interrupt]);
+  // Note: Removed interrupt calls from cleanup - TTS will continue playing
 
   // Get current elapsed time (approximate)
   const getElapsedTime = useCallback(() => {
