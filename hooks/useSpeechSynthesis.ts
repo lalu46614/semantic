@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useVoice } from "@/contexts/VoiceContext";
-import { Message } from "@/lib/types";
+import { Message, EventType } from "@/lib/types";
 import { prepareForSpeech } from "@/lib/utils";
 
 interface UseSpeechSynthesisOptions {
@@ -44,19 +44,25 @@ export function useSpeechSynthesis({ messages, enabled = true }: UseSpeechSynthe
       return;
     }
 
-    // Only speak if this is a response to a voice-initiated message
-    // Check if there was a voice message sent recently (within last 30 seconds)
-    // and the assistant message came after it
-    if (lastVoiceMessageTimestamp === null) {
-      return; // No voice message was sent, don't speak
-    }
+    // Check if this is a clarification message
+    const isClarification = latestMessage.envelopeMetadata?.type === EventType.CLARIFICATION_REQUEST;
 
-    const messageTime = new Date(latestMessage.createdAt).getTime();
-    const timeSinceVoiceMessage = messageTime - lastVoiceMessageTimestamp;
-    
-    // Only speak if message came after voice message and within 30 seconds
-    if (timeSinceVoiceMessage < 0 || timeSinceVoiceMessage > 30000) {
-      return; // Message is too old or came before voice message
+    // For clarification messages, always speak them (they're important for user interaction)
+    // For regular messages, only speak if this is a response to a voice-initiated message
+    if (!isClarification) {
+      // Check if there was a voice message sent recently (within last 30 seconds)
+      // and the assistant message came after it
+      if (lastVoiceMessageTimestamp === null) {
+        return; // No voice message was sent, don't speak
+      }
+
+      const messageTime = new Date(latestMessage.createdAt).getTime();
+      const timeSinceVoiceMessage = messageTime - lastVoiceMessageTimestamp;
+      
+      // Only speak if message came after voice message and within 30 seconds
+      if (timeSinceVoiceMessage < 0 || timeSinceVoiceMessage > 30000) {
+        return; // Message is too old or came before voice message
+      }
     }
 
     // Use browser TTS (ElevenLabs is handled by VoiceConnect during voice mode)

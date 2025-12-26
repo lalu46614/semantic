@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState, useRef, useImperativeHandle, forwardRef } from "react";
-import { Message } from "@/lib/types";
+import { Message, EventType } from "@/lib/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { User, Bot } from "lucide-react";
+import { User, Bot, HelpCircle } from "lucide-react";
 import { BucketBadge } from "@/components/BucketBadge";
 import { SystemDivider } from "@/components/SystemDivider";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
@@ -129,6 +129,7 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
 
         // Render the message
         const isHighlighted = highlightedMessageId === message.id;
+        const isClarification = message.envelopeMetadata?.type === EventType.CLARIFICATION_REQUEST;
         elements.push(
           <div
             key={message.id}
@@ -145,8 +146,16 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
           >
             {message.role === "assistant" && (
               <div className="flex-shrink-0">
-                <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-                  <Bot className="h-4 w-4 text-primary-foreground" />
+                <div className={`h-8 w-8 rounded-full flex items-center justify-center ${
+                  isClarification 
+                    ? "bg-amber-500 text-amber-50" 
+                    : "bg-primary text-primary-foreground"
+                }`}>
+                  {isClarification ? (
+                    <HelpCircle className="h-4 w-4" />
+                  ) : (
+                    <Bot className="h-4 w-4" />
+                  )}
                 </div>
               </div>
             )}
@@ -154,6 +163,8 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
               className={`max-w-[80%] rounded-lg px-4 py-2 ${
                 message.role === "user"
                   ? "bg-primary text-primary-foreground"
+                  : isClarification
+                  ? "bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-400 dark:border-amber-600"
                   : "bg-muted"
               }`}
             >
@@ -162,7 +173,15 @@ export const MessageList = forwardRef<MessageListRef, MessageListProps>(
                   <BucketBadge bucketName={message.bucketName} />
                 </div>
               )}
-              <div className="text-sm whitespace-pre-wrap break-words">
+              {isClarification && (
+                <div className="mb-2 flex items-center gap-2 text-amber-700 dark:text-amber-400 text-xs font-semibold">
+                  <HelpCircle className="h-3 w-3" />
+                  Clarification Request
+                </div>
+              )}
+              <div className={`text-sm whitespace-pre-wrap break-words ${
+                isClarification ? "text-amber-900 dark:text-amber-100" : ""
+              }`}>
                 {message.content}
               </div>
               {message.fileRefs && message.fileRefs.length > 0 && (

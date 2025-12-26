@@ -419,7 +419,29 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
           console.log("[VoiceConnect] Received clarification:", data.clarification);
           // Clear user caption when clarification arrives
           updateTransientCaptions({ user: "", ai: data.clarification });
-          // Don't send clarification to ElevenLabs TTS
+          
+          // Send clarification to ElevenLabs TTS in ambient mode
+          const clarificationText = prepareForSpeech(data.clarification);
+          sendChunk(clarificationText, true); // Send as final chunk to trigger TTS
+          
+          // Calculate word timing for clarification (similar to regular responses)
+          const words = splitIntoWords(data.clarification);
+          if (words.length > 0) {
+            // Estimate duration based on speaking rate (~150 words per minute = 0.4 seconds per word)
+            const estimatedDuration = words.length * 0.4;
+            const startTime = Date.now();
+            const wordTimings = calculateWordTimings(words, estimatedDuration);
+            
+            updateTransientCaptions({
+              ai: data.clarification,
+              aiWords: words,
+              aiWordTimings: wordTimings,
+              aiStartTime: startTime,
+            });
+          } else {
+            updateTransientCaptions({ ai: data.clarification });
+          }
+          
           return;
         } else if (data.error) {
           console.error("[VoiceConnect] Error in response:", data.error);
@@ -538,10 +560,31 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
               } else if (data.type === "error") {
                 setError(`Error: ${data.error || "Streaming failed"}`);
               } else if (data.clarification) {
-                // Handle clarification request in SSE format (don't speak this)
-                updateTransientCaptions({ ai: data.clarification });
+                // Handle clarification request in SSE format
                 console.log("Clarification needed:", data.clarification);
-                // Don't send clarification to ElevenLabs TTS
+                updateTransientCaptions({ ai: data.clarification });
+                
+                // Send clarification to ElevenLabs TTS in ambient mode
+                const clarificationText = prepareForSpeech(data.clarification);
+                sendChunk(clarificationText, true); // Send as final chunk to trigger TTS
+                
+                // Calculate word timing for clarification (similar to regular responses)
+                const words = splitIntoWords(data.clarification);
+                if (words.length > 0) {
+                  // Estimate duration based on speaking rate (~150 words per minute = 0.4 seconds per word)
+                  const estimatedDuration = words.length * 0.4;
+                  const startTime = Date.now();
+                  const wordTimings = calculateWordTimings(words, estimatedDuration);
+                  
+                  updateTransientCaptions({
+                    ai: data.clarification,
+                    aiWords: words,
+                    aiWordTimings: wordTimings,
+                    aiStartTime: startTime,
+                  });
+                } else {
+                  updateTransientCaptions({ ai: data.clarification });
+                }
               }
             } catch (e) {
               console.error("Error parsing SSE data:", e);

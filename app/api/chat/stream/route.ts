@@ -55,8 +55,94 @@ export async function POST(request: NextRequest) {
       );
       targetBucketId = newBucket.id;
     } else if (routingDecision.action === "CLARIFY") {
+      // Determine target bucket for clarification
+      // Use provided bucketId, or most recent bucket, or create a temporary one
+      if (bucketId) {
+        const existingBucket = bucketStore.getBucket(bucketId);
+        if (existingBucket) {
+          targetBucketId = bucketId;
+        }
+      }
+      
+      if (!targetBucketId) {
+        const allBuckets = bucketStore.getBuckets();
+        if (allBuckets.length > 0) {
+          // Use most recent bucket
+          targetBucketId = allBuckets[0].id;
+        } else {
+          // Create a temporary bucket for clarification
+          const tempBucket = bucketStore.createBucket("Clarification");
+          targetBucketId = tempBucket.id;
+        }
+      }
+
+      // Handle file uploads if any
+      const fileRefs: FileRef[] = [];
+      if (files && files.length > 0 && targetBucketId) {
+        for (const file of files) {
+          if (file.size > 0) {
+            const buffer = Buffer.from(await file.arrayBuffer());
+            const filename = file.name;
+            const uploadPath = `uploads/${Date.now()}_${filename}`;
+            const filePath = `public/${uploadPath}`;
+            
+            // Save file
+            const fullPath = path.join(process.cwd(), filePath);
+            const dir = path.dirname(fullPath);
+            if (!fs.existsSync(dir)) {
+              fs.mkdirSync(dir, { recursive: true });
+            }
+            fs.writeFileSync(fullPath, buffer);
+
+            const fileRef = bucketStore.addFile({
+              bucketId: targetBucketId,
+              filename,
+              path: uploadPath,
+            });
+            fileRefs.push(fileRef);
+          }
+        }
+      }
+
+      // Save user message to bucket
+      const userMessageForStore = createEnvelope(
+        {
+          bucketId: targetBucketId,
+          content: message,
+          role: "user" as const,
+          fileRefs,
+          isVoice: isVoice || false,
+        },
+        {
+          ...userMessageEnvelope.metadata,
+          eventId: userMessageEnvelope.metadata.eventId,
+        }
+      );
+      bucketStore.addMessage(userMessageForStore);
+
+      // Save clarification as assistant message
+      const clarificationMessageForStore = createEnvelope(
+        {
+          bucketId: targetBucketId,
+          content: routingDecision.clarificationQuestion || "Could you clarify what you'd like to discuss?",
+          role: "assistant" as const,
+          fileRefs: [],
+        },
+        {
+          source: EventSource.ROUTER,
+          type: EventType.CLARIFICATION_REQUEST,
+          correlationId: userMessageEnvelope.metadata.correlationId,
+          sessionId: userMessageEnvelope.metadata.sessionId,
+          parentEventId: routingDecisionEnvelope.metadata.eventId,
+        }
+      );
+      bucketStore.addMessage(clarificationMessageForStore);
+
       return new Response(
-        JSON.stringify({ clarification: routingDecision.clarificationQuestion }),
+        JSON.stringify({ 
+          clarification: routingDecision.clarificationQuestion,
+          bucketId: targetBucketId,
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }

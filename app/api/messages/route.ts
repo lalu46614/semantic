@@ -37,18 +37,31 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({ envelopes: allEnvelopes });
     } else {
-      // Extract payloads for backward compatibility
+      // Extract payloads for backward compatibility, but include envelopeMetadata
       const allMessages: Message[] = [];
 
       // Collect all messages from all buckets
       for (const bucket of buckets) {
-        const messages = bucketStore.getMessages(bucket.id);
-        // Add bucketName to each message
-        const messagesWithBucketName = messages.map((msg) => ({
-          ...msg,
-          bucketName: bucket.name,
-        }));
-        allMessages.push(...messagesWithBucketName);
+        // Get envelopes to access metadata
+        const envelopes = bucketStore.getEventEnvelopes(bucket.id);
+        // Extract payloads and include envelopeMetadata
+        const messagesWithMetadata = envelopes.map((envelope) => {
+          const message = extractPayload(envelope);
+          return {
+            ...message,
+            bucketName: bucket.name,
+            envelopeMetadata: {
+              type: envelope.metadata.type,
+              source: envelope.metadata.source,
+              eventId: envelope.metadata.eventId,
+              correlationId: envelope.metadata.correlationId,
+              sessionId: envelope.metadata.sessionId,
+              parentEventId: envelope.metadata.parentEventId,
+              timestamp: envelope.metadata.timestamp,
+            },
+          };
+        });
+        allMessages.push(...messagesWithMetadata);
       }
 
       // Sort messages chronologically by createdAt

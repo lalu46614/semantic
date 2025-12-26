@@ -132,55 +132,65 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
           throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        // Read SSE stream
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let fullResponse = "";
+        // Check if response is JSON (clarification) or SSE stream
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          // Handle JSON response (clarification)
+          const data = await response.json();
+          if (data.error) {
+            alert(`Error: ${data.error}`);
+          }
+          // Clarification messages are now saved to the store and will appear in chat automatically
+        } else {
+          // Read SSE stream
+          const reader = response.body?.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let fullResponse = "";
 
-        if (!reader) {
-          throw new Error("No response body");
-        }
+          if (!reader) {
+            throw new Error("No response body");
+          }
 
-        let envelopeMetadata: any = null;
+          let envelopeMetadata: any = null;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n\n");
-          buffer = lines.pop() || "";
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n\n");
+            buffer = lines.pop() || "";
 
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                
-                if (data.type === "start") {
-                  // Extract envelope metadata from initial event
-                  envelopeMetadata = data.envelope;
-                  if (envelopeMetadata) {
-                    console.log("[ChatArea] Received envelope metadata:", envelopeMetadata);
-                  }
-                } else if (data.type === "chunk" && data.text) {
-                  fullResponse += data.text;
-                  // Text inputs in ambient mode don't trigger speech responses
-                  // Only voice-initiated messages should be spoken
-                } else if (data.type === "done") {
-                  // Extract envelope metadata from final event if available
-                  if (data.envelope) {
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  
+                  if (data.type === "start") {
+                    // Extract envelope metadata from initial event
                     envelopeMetadata = data.envelope;
-                    console.log("[ChatArea] Response complete with envelope:", envelopeMetadata);
+                    if (envelopeMetadata) {
+                      console.log("[ChatArea] Received envelope metadata:", envelopeMetadata);
+                    }
+                  } else if (data.type === "chunk" && data.text) {
+                    fullResponse += data.text;
+                    // Text inputs in ambient mode don't trigger speech responses
+                    // Only voice-initiated messages should be spoken
+                  } else if (data.type === "done") {
+                    // Extract envelope metadata from final event if available
+                    if (data.envelope) {
+                      envelopeMetadata = data.envelope;
+                      console.log("[ChatArea] Response complete with envelope:", envelopeMetadata);
+                    }
+                    // Message is already saved to bucket history by backend
+                  } else if (data.type === "error") {
+                    alert(`Error: ${data.error || "Streaming failed"}`);
                   }
-                  // Message is already saved to bucket history by backend
-                } else if (data.type === "error") {
-                  alert(`Error: ${data.error || "Streaming failed"}`);
-                } else if (data.clarification) {
-                  alert(data.clarification);
+                  // Clarification messages are now saved to the store and will appear in chat automatically
+                } catch (e) {
+                  console.error("Error parsing SSE data:", e);
                 }
-              } catch (e) {
-                console.error("Error parsing SSE data:", e);
               }
             }
           }
@@ -203,12 +213,10 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
           // The response payload is already extracted for backward compatibility
         }
 
-        if (data.clarification) {
-          // Handle clarification request
-          alert(data.clarification);
-        } else if (data.error) {
+        if (data.error) {
           alert(`Error: ${data.error}`);
         }
+        // Clarification messages are now saved to the store and will appear in chat automatically
         // Message is already added to the store, MessageList will update via polling
       }
     } catch (error) {
