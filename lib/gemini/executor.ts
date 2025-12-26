@@ -1,16 +1,46 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { FileRef } from "@/lib/types";
+import { FileRef, EventEnvelope, EventSource, EventType } from "@/lib/types";
 import { bucketStore } from "@/lib/store/bucket-store";
+import { createEnvelope, extractPayload, correlateEvents } from "@/lib/event-envelope";
 import fs from "fs";
 import path from "path";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 export async function executeMessage(
-  userInput: string,
+  userInputOrEnvelope: string | EventEnvelope<{ message: string; bucketId: string; fileRefs?: FileRef[] }>,
   bucketId: string,
   fileRefs?: FileRef[]
-): Promise<string> {
+): Promise<EventEnvelope<{ response: string }>> {
+  // Extract message and envelope metadata
+  let userInput: string;
+  let parentEnvelope: EventEnvelope<any> | null = null;
+  let correlationId: string;
+  let parentEventId: string | null = null;
+  let sessionId: string | null = null;
+
+  if (typeof userInputOrEnvelope === "string") {
+    // Plain string input (backward compatibility)
+    userInput = userInputOrEnvelope;
+    correlationId = `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  } else {
+    // Envelope input
+    parentEnvelope = userInputOrEnvelope;
+    const payload = extractPayload(userInputOrEnvelope);
+    userInput = payload.message || payload;
+    correlationId = userInputOrEnvelope.metadata.correlationId;
+    parentEventId = userInputOrEnvelope.metadata.eventId;
+    sessionId = userInputOrEnvelope.metadata.sessionId;
+    // Use fileRefs from envelope payload if available
+    if (payload.fileRefs) {
+      fileRefs = payload.fileRefs;
+    }
+    if (payload.bucketId) {
+      bucketId = payload.bucketId;
+    }
+  }
+
+  const startTime = Date.now();
   // Use gemini-2.5-flash (or gemini-1.5-flash as fallback via env var)
   const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const model = genAI.getGenerativeModel({
@@ -71,7 +101,28 @@ export async function executeMessage(
 
     const result = await model.generateContent(contentParts);
     const response = result.response;
-    return response.text();
+    const responseText = response.text();
+    
+    const processingTime = Date.now() - startTime;
+    
+    // Wrap response in envelope
+    const envelopeMetadata = correlateEvents(
+      parentEnvelope || createEnvelope({ message: userInput }, {
+        source: EventSource.API_ROUTE,
+        type: EventType.MESSAGE_USER,
+        correlationId,
+      }),
+      {
+        source: EventSource.EXECUTOR,
+        type: EventType.MESSAGE_ASSISTANT,
+        correlationId,
+        parentEventId,
+        sessionId,
+        processingTime,
+      }
+    );
+
+    return createEnvelope({ response: responseText }, envelopeMetadata);
   } catch (error) {
     console.error("Executor error:", error);
     throw new Error("Failed to generate response. Please try again.");
@@ -95,11 +146,45 @@ function getMimeType(filename: string): string {
   return mimeTypes[ext || ""] || "application/octet-stream";
 }
 
-export async function* executeMessageStream(
-  userInput: string,
+export interface StreamExecutionResult {
+  envelope: EventEnvelope<{ response: string }>;
+  stream: AsyncGenerator<string, void, unknown>;
+}
+
+export async function executeMessageStream(
+  userInputOrEnvelope: string | EventEnvelope<{ message: string; bucketId: string; fileRefs?: FileRef[] }>,
   bucketId: string,
   fileRefs?: FileRef[]
-): AsyncGenerator<string, void, unknown> {
+): Promise<StreamExecutionResult> {
+  // Extract message and envelope metadata
+  let userInput: string;
+  let parentEnvelope: EventEnvelope<any> | null = null;
+  let correlationId: string;
+  let parentEventId: string | null = null;
+  let sessionId: string | null = null;
+
+  if (typeof userInputOrEnvelope === "string") {
+    // Plain string input (backward compatibility)
+    userInput = userInputOrEnvelope;
+    correlationId = `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  } else {
+    // Envelope input
+    parentEnvelope = userInputOrEnvelope;
+    const payload = extractPayload(userInputOrEnvelope);
+    userInput = payload.message || payload;
+    correlationId = userInputOrEnvelope.metadata.correlationId;
+    parentEventId = userInputOrEnvelope.metadata.eventId;
+    sessionId = userInputOrEnvelope.metadata.sessionId;
+    // Use fileRefs from envelope payload if available
+    if (payload.fileRefs) {
+      fileRefs = payload.fileRefs;
+    }
+    if (payload.bucketId) {
+      bucketId = payload.bucketId;
+    }
+  }
+
+  const startTime = Date.now();
   // Use gemini-2.5-flash (or gemini-1.5-flash as fallback via env var)
   const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const model = genAI.getGenerativeModel({
@@ -160,12 +245,42 @@ export async function* executeMessageStream(
 
     const stream = await model.generateContentStream(contentParts);
     
-    for await (const chunk of stream.stream) {
-      const chunkText = chunk.text();
-      if (chunkText) {
-        yield chunkText;
+    // Create envelope metadata (processingTime will be updated when stream completes)
+    const envelopeMetadata = correlateEvents(
+      parentEnvelope || createEnvelope({ message: userInput }, {
+        source: EventSource.API_ROUTE,
+        type: EventType.MESSAGE_USER,
+        correlationId,
+      }),
+      {
+        source: EventSource.EXECUTOR,
+        type: EventType.MESSAGE_ASSISTANT,
+        correlationId,
+        parentEventId,
+        sessionId,
+        processingTime: null, // Will be calculated when stream completes
       }
+    );
+
+    // Create envelope with placeholder response (will be updated)
+    const envelope = createEnvelope({ response: "" }, envelopeMetadata);
+
+    // Create async generator for chunks
+    async function* chunkGenerator(): AsyncGenerator<string, void, unknown> {
+      for await (const chunk of stream.stream) {
+        const chunkText = chunk.text();
+        if (chunkText) {
+          yield chunkText;
+        }
+      }
+      // Update processing time when stream completes
+      envelope.metadata.processingTime = Date.now() - startTime;
     }
+
+    return {
+      envelope,
+      stream: chunkGenerator(),
+    };
   } catch (error) {
     console.error("Executor streaming error:", error);
     throw new Error("Failed to generate streaming response. Please try again.");

@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { RoutingDecision, Bucket } from "@/lib/types";
+import { RoutingDecision, Bucket, EventEnvelope, EventSource, EventType } from "@/lib/types";
+import { createEnvelope, extractPayload, correlateEvents } from "@/lib/event-envelope";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
@@ -31,10 +32,34 @@ const ROUTING_SCHEMA = {
 };
 
 export async function routeMessage(
-  userInput: string,
+  userInputOrEnvelope: string | EventEnvelope<{ message: string; bucketId?: string }>,
   existingBuckets: Bucket[],
   currentBucketId?: string
-): Promise<RoutingDecision> {
+): Promise<EventEnvelope<RoutingDecision>> {
+  // Extract message and envelope metadata
+  let userInput: string;
+  let parentEnvelope: EventEnvelope<any> | null = null;
+  let correlationId: string;
+  let parentEventId: string | null = null;
+
+  if (typeof userInputOrEnvelope === "string") {
+    // Plain string input (backward compatibility)
+    userInput = userInputOrEnvelope;
+    correlationId = `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  } else {
+    // Envelope input
+    parentEnvelope = userInputOrEnvelope;
+    const payload = extractPayload(userInputOrEnvelope);
+    userInput = payload.message || payload;
+    correlationId = userInputOrEnvelope.metadata.correlationId;
+    parentEventId = userInputOrEnvelope.metadata.eventId;
+    // Use bucketId from envelope payload if available
+    if (payload.bucketId) {
+      currentBucketId = payload.bucketId;
+    }
+  }
+
+  const startTime = Date.now();
   // Use gemini-2.5-flash (or gemini-1.5-flash as fallback via env var)
   const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const model = genAI.getGenerativeModel({
@@ -82,11 +107,11 @@ Be strict: only route to existing if there's clear semantic similarity. When in 
     const text = response.text();
     
     // Parse JSON response
-    const decision: RoutingDecision = JSON.parse(text);
+    let decision: RoutingDecision = JSON.parse(text);
     
     // Validate the decision
     if (decision.action === "ROUTE_TO_EXISTING" && !decision.bucketId) {
-      return {
+      decision = {
         action: "CLARIFY",
         bucketId: null,
         newBucketName: null,
@@ -103,16 +128,51 @@ Be strict: only route to existing if there's clear semantic similarity. When in 
       decision.clarificationQuestion = "Could you clarify what you'd like to discuss?";
     }
     
-    return decision;
+    // Wrap decision in envelope
+    const processingTime = Date.now() - startTime;
+    const envelopeMetadata = correlateEvents(
+      parentEnvelope || createEnvelope({ message: userInput }, {
+        source: EventSource.API_ROUTE,
+        type: EventType.MESSAGE_USER,
+        correlationId,
+      }),
+      {
+        source: EventSource.ROUTER,
+        type: EventType.ROUTING_DECISION,
+        correlationId,
+        parentEventId,
+        processingTime,
+      }
+    );
+
+    return createEnvelope(decision, envelopeMetadata);
   } catch (error) {
     console.error("Router error:", error);
     // Fallback to CLARIFY on error
-    return {
+    const fallbackDecision: RoutingDecision = {
       action: "CLARIFY",
       bucketId: null,
       newBucketName: null,
       clarificationQuestion: "I'm having trouble understanding. Could you rephrase your request?",
     };
+    
+    const processingTime = Date.now() - startTime;
+    const envelopeMetadata = correlateEvents(
+      parentEnvelope || createEnvelope({ message: userInput }, {
+        source: EventSource.API_ROUTE,
+        type: EventType.MESSAGE_USER,
+        correlationId,
+      }),
+      {
+        source: EventSource.ROUTER,
+        type: EventType.ROUTING_DECISION,
+        correlationId,
+        parentEventId,
+        processingTime,
+      }
+    );
+
+    return createEnvelope(fallbackDecision, envelopeMetadata);
   }
 }
 

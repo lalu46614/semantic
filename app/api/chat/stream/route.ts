@@ -2,7 +2,8 @@ import { NextRequest } from "next/server";
 import { routeMessage } from "@/lib/gemini/router";
 import { executeMessageStream } from "@/lib/gemini/executor";
 import { bucketStore } from "@/lib/store/bucket-store";
-import { FileRef } from "@/lib/types";
+import { FileRef, EventSource, EventType } from "@/lib/types";
+import { createEnvelope, extractPayload } from "@/lib/event-envelope";
 import fs from "fs";
 import path from "path";
 
@@ -14,6 +15,12 @@ export async function POST(request: NextRequest) {
     const isVoice = formData.get("isVoice") === "true";
     const files = formData.getAll("files") as File[];
 
+    // Extract envelope metadata from request
+    const correlationId = (formData.get("correlationId") as string) || 
+      `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const sessionId = (formData.get("sessionId") as string) || null;
+    const parentEventId = (formData.get("parentEventId") as string) || null;
+
     if (!message) {
       return new Response(
         JSON.stringify({ error: "Message is required" }),
@@ -21,9 +28,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Wrap incoming message in envelope
+    const userMessageEnvelope = createEnvelope(
+      { message, bucketId: bucketId || undefined },
+      {
+        source: EventSource.API_ROUTE,
+        type: isVoice ? EventType.VOICE_INPUT : EventType.MESSAGE_USER,
+        correlationId,
+        sessionId,
+        parentEventId,
+      }
+    );
+
     // CRITICAL: Always call the router for every message, regardless of bucketId
     const existingBuckets = bucketStore.getBuckets();
-    const routingDecision = await routeMessage(message, existingBuckets, bucketId || undefined);
+    const routingDecisionEnvelope = await routeMessage(userMessageEnvelope, existingBuckets, bucketId || undefined);
+    const routingDecision = extractPayload(routingDecisionEnvelope);
 
     let targetBucketId: string | null = null;
 
@@ -76,14 +96,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Create envelope for user message with fileRefs
+    const userMessageForStore = createEnvelope(
+      {
+        bucketId: targetBucketId,
+        content: message,
+        role: "user" as const,
+        fileRefs,
+        isVoice: isVoice || false,
+      },
+      {
+        ...userMessageEnvelope.metadata,
+        eventId: userMessageEnvelope.metadata.eventId,
+      }
+    );
+
     // Add user message to bucket
-    bucketStore.addMessage({
-      bucketId: targetBucketId,
-      content: message,
-      role: "user",
-      fileRefs,
-      isVoice: isVoice || false,
-    });
+    bucketStore.addMessage(userMessageForStore);
+
+    // Create envelope for execution
+    const executionEnvelope = createEnvelope(
+      { message, bucketId: targetBucketId, fileRefs },
+      {
+        ...userMessageEnvelope.metadata,
+        parentEventId: userMessageEnvelope.metadata.eventId,
+      }
+    );
 
     // Create a ReadableStream for SSE
     const stream = new ReadableStream({
@@ -91,34 +129,62 @@ export async function POST(request: NextRequest) {
         const encoder = new TextEncoder();
         
         try {
-          // Send initial metadata
+          // Execute with streaming
+          const { envelope: responseEnvelope, stream: chunkStream } = await executeMessageStream(
+            executionEnvelope,
+            targetBucketId,
+            fileRefs
+          );
+
+          // Send initial metadata with envelope
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "start", bucketId: targetBucketId })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ 
+              type: "start", 
+              bucketId: targetBucketId,
+              envelope: responseEnvelope.metadata 
+            })}\n\n`)
           );
 
           let fullResponse = "";
 
-          // Stream from Gemini
-          for await (const chunk of executeMessageStream(message, targetBucketId, fileRefs)) {
+          // Stream chunks (payload only)
+          for await (const chunk of chunkStream) {
             fullResponse += chunk;
             
-            // Send chunk to client
+            // Send chunk to client (payload only)
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ type: "chunk", text: chunk })}\n\n`)
             );
           }
 
-          // Add complete assistant response to bucket
-          bucketStore.addMessage({
-            bucketId: targetBucketId,
-            content: fullResponse,
-            role: "assistant",
-            fileRefs: [],
-          });
+          // Update envelope with final response
+          responseEnvelope.payload.response = fullResponse;
+          responseEnvelope.metadata.processingTime = Date.now() - new Date(responseEnvelope.metadata.timestamp).getTime();
 
-          // Send completion signal
+          // Create envelope for assistant message
+          const assistantMessageForStore = createEnvelope(
+            {
+              bucketId: targetBucketId,
+              content: fullResponse,
+              role: "assistant" as const,
+              fileRefs: [],
+            },
+            {
+              ...responseEnvelope.metadata,
+              eventId: responseEnvelope.metadata.eventId,
+            }
+          );
+
+          // Add complete assistant response to bucket
+          bucketStore.addMessage(assistantMessageForStore);
+
+          // Send completion signal with envelope
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "done", bucketId: targetBucketId })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ 
+              type: "done", 
+              bucketId: targetBucketId,
+              envelope: responseEnvelope.metadata 
+            })}\n\n`)
           );
         } catch (error) {
           console.error("Streaming error:", error);

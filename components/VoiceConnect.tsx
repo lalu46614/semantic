@@ -9,6 +9,31 @@ import { Bucket } from "@/lib/types";
 import { useUnifiedTTS } from "@/hooks/useUnifiedTTS";
 import { prepareForSpeech } from "@/lib/utils";
 
+/**
+ * Gets or creates a session ID stored in sessionStorage
+ */
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") {
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+  
+  const existingSessionId = sessionStorage.getItem("sessionId");
+  if (existingSessionId) {
+    return existingSessionId;
+  }
+  
+  const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  sessionStorage.setItem("sessionId", newSessionId);
+  return newSessionId;
+}
+
+/**
+ * Generates a correlation ID for an interaction
+ */
+function generateCorrelationId(): string {
+  return `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
 interface VoiceConnectProps {
   currentBucketName: string | null;
 }
@@ -342,9 +367,15 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
     console.log("[VoiceConnect] Active bucket ID:", activeBucketId);
     
     try {
+      // Generate correlationId and get sessionId for this interaction
+      const correlationId = generateCorrelationId();
+      const sessionId = getOrCreateSessionId();
+
       const formData = new FormData();
       formData.append("message", messageText);
       formData.append("isVoice", "true");
+      formData.append("correlationId", correlationId);
+      formData.append("sessionId", sessionId);
       if (activeBucketId) {
         formData.append("bucketId", activeBucketId);
       }
@@ -352,6 +383,7 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       // Mark that a voice message was sent (before API call)
       markVoiceMessageSent();
       console.log("[VoiceConnect] Marked voice message as sent");
+      console.log("[VoiceConnect] CorrelationId:", correlationId, "SessionId:", sessionId);
 
       // Use streaming endpoint for voice messages
       console.log("[VoiceConnect] Sending request to /api/chat/stream...");
@@ -409,6 +441,8 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
       }
 
       console.log("[VoiceConnect] Starting to read stream chunks...");
+      let envelopeMetadata: any = null;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
@@ -425,7 +459,13 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
             try {
               const data = JSON.parse(line.slice(6));
               
-              if (data.type === "chunk" && data.text) {
+              if (data.type === "start") {
+                // Extract envelope metadata from initial event
+                envelopeMetadata = data.envelope;
+                if (envelopeMetadata) {
+                  console.log("[VoiceConnect] Received envelope metadata:", envelopeMetadata);
+                }
+              } else if (data.type === "chunk" && data.text) {
                 fullResponse += data.text;
                 fullResponseRef.current = fullResponse;
                 console.log("[VoiceConnect] Received chunk:", data.text.substring(0, 50) + "...");
@@ -440,6 +480,11 @@ export function VoiceConnect({ currentBucketName }: VoiceConnectProps) {
                 sendChunk(prepareForSpeech(data.text), false);
               } else if (data.type === "done") {
                 console.log("[VoiceConnect] Response complete, full length:", fullResponse.length);
+                // Extract envelope metadata from final event if available
+                if (data.envelope) {
+                  envelopeMetadata = data.envelope;
+                  console.log("[VoiceConnect] Response complete with envelope:", envelopeMetadata);
+                }
                 // Send final chunk to TTS
                 if (fullResponse.trim()) {
                   sendChunk("", true); // Trigger generation

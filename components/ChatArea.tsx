@@ -9,6 +9,31 @@ import { ContextHeader } from "@/components/ContextHeader";
 import { useVoice } from "@/contexts/VoiceContext";
 import { Send, Loader2 } from "lucide-react";
 
+/**
+ * Gets or creates a session ID stored in sessionStorage
+ */
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") {
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+  
+  const existingSessionId = sessionStorage.getItem("sessionId");
+  if (existingSessionId) {
+    return existingSessionId;
+  }
+  
+  const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  sessionStorage.setItem("sessionId", newSessionId);
+  return newSessionId;
+}
+
+/**
+ * Generates a correlation ID for an interaction
+ */
+function generateCorrelationId(): string {
+  return `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
 interface ChatAreaProps {
   messageListRef?: React.RefObject<MessageListRef>;
   onBucketNameChange?: (bucketName: string | null) => void;
@@ -69,6 +94,10 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
     const messageToSend = message;
     const filesToSend = selectedFiles;
     
+    // Generate correlationId and get sessionId for this interaction
+    const correlationId = generateCorrelationId();
+    const sessionId = getOrCreateSessionId();
+    
     // Only mark text message sent if NOT in Connect mode (to allow TTS in Connect mode)
     if (!isConnected) {
       markTextMessageSent();
@@ -81,6 +110,8 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
     try {
       const formData = new FormData();
       formData.append("message", messageToSend);
+      formData.append("correlationId", correlationId);
+      formData.append("sessionId", sessionId);
       filesToSend.forEach((file) => {
         formData.append("files", file);
       });
@@ -111,6 +142,8 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
           throw new Error("No response body");
         }
 
+        let envelopeMetadata: any = null;
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -124,11 +157,22 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
               try {
                 const data = JSON.parse(line.slice(6));
                 
-                if (data.type === "chunk" && data.text) {
+                if (data.type === "start") {
+                  // Extract envelope metadata from initial event
+                  envelopeMetadata = data.envelope;
+                  if (envelopeMetadata) {
+                    console.log("[ChatArea] Received envelope metadata:", envelopeMetadata);
+                  }
+                } else if (data.type === "chunk" && data.text) {
                   fullResponse += data.text;
                   // Text inputs in ambient mode don't trigger speech responses
                   // Only voice-initiated messages should be spoken
                 } else if (data.type === "done") {
+                  // Extract envelope metadata from final event if available
+                  if (data.envelope) {
+                    envelopeMetadata = data.envelope;
+                    console.log("[ChatArea] Response complete with envelope:", envelopeMetadata);
+                  }
                   // Message is already saved to bucket history by backend
                 } else if (data.type === "error") {
                   alert(`Error: ${data.error || "Streaming failed"}`);
@@ -151,6 +195,13 @@ export function ChatArea({ messageListRef, onBucketNameChange }: ChatAreaProps) 
         });
 
         const data = await response.json();
+
+        // Handle envelope response if present
+        if (data.envelope) {
+          console.log("[ChatArea] Received envelope:", data.envelope);
+          // Use envelope metadata for UI updates if needed
+          // The response payload is already extracted for backward compatibility
+        }
 
         if (data.clarification) {
           // Handle clarification request

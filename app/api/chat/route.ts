@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { routeMessage } from "@/lib/gemini/router";
 import { executeMessage } from "@/lib/gemini/executor";
 import { bucketStore } from "@/lib/store/bucket-store";
-import { FileRef } from "@/lib/types";
+import { FileRef, EventSource, EventType } from "@/lib/types";
+import { createEnvelope, extractPayload } from "@/lib/event-envelope";
 import fs from "fs";
 import path from "path";
 
@@ -14,6 +15,12 @@ export async function POST(request: NextRequest) {
     const isVoice = formData.get("isVoice") === "true";
     const files = formData.getAll("files") as File[];
 
+    // Extract envelope metadata from request
+    const correlationId = (formData.get("correlationId") as string) || 
+      `corr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const sessionId = (formData.get("sessionId") as string) || null;
+    const parentEventId = (formData.get("parentEventId") as string) || null;
+
     if (!message) {
       return NextResponse.json(
         { error: "Message is required" },
@@ -21,10 +28,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Wrap incoming message in envelope
+    const userMessageEnvelope = createEnvelope(
+      { message, bucketId: bucketId || undefined },
+      {
+        source: EventSource.API_ROUTE,
+        type: isVoice ? EventType.VOICE_INPUT : EventType.MESSAGE_USER,
+        correlationId,
+        sessionId,
+        parentEventId,
+      }
+    );
+
     // CRITICAL: Always call the router for every message, regardless of bucketId
     // The router will analyze intent and can override the selected bucket if it detects a hard pivot
     const existingBuckets = bucketStore.getBuckets();
-    const routingDecision = await routeMessage(message, existingBuckets, bucketId || undefined);
+    const routingDecisionEnvelope = await routeMessage(userMessageEnvelope, existingBuckets, bucketId || undefined);
+    const routingDecision = extractPayload(routingDecisionEnvelope);
 
     let targetBucketId: string | null = null;
 
@@ -76,26 +96,65 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Add user message to bucket
-    bucketStore.addMessage({
-      bucketId: targetBucketId,
-      content: message,
-      role: "user",
-      fileRefs,
-      isVoice: isVoice || false,
-    });
+    // Create envelope for user message with fileRefs
+    const userMessageForStore = createEnvelope(
+      {
+        bucketId: targetBucketId,
+        content: message,
+        role: "user" as const,
+        fileRefs,
+        isVoice: isVoice || false,
+      },
+      {
+        ...userMessageEnvelope.metadata,
+        eventId: userMessageEnvelope.metadata.eventId,
+      }
+    );
 
-    // Execute with bucket-isolated context
-    const response = await executeMessage(message, targetBucketId, fileRefs);
+    // Add user message to bucket (store accepts envelopes)
+    bucketStore.addMessage(userMessageForStore);
+
+    // Execute with bucket-isolated context (pass envelope)
+    const executionEnvelope = createEnvelope(
+      { message, bucketId: targetBucketId, fileRefs },
+      {
+        ...userMessageEnvelope.metadata,
+        parentEventId: userMessageEnvelope.metadata.eventId,
+      }
+    );
+    const responseEnvelope = await executeMessage(executionEnvelope, targetBucketId, fileRefs);
+    const response = extractPayload(responseEnvelope).response;
+
+    // Create envelope for assistant message
+    const assistantMessageForStore = createEnvelope(
+      {
+        bucketId: targetBucketId,
+        content: response,
+        role: "assistant" as const,
+        fileRefs: [],
+      },
+      {
+        ...responseEnvelope.metadata,
+        eventId: responseEnvelope.metadata.eventId,
+      }
+    );
 
     // Add assistant response to bucket
-    bucketStore.addMessage({
-      bucketId: targetBucketId,
-      content: response,
-      role: "assistant",
-      fileRefs: [],
-    });
+    bucketStore.addMessage(assistantMessageForStore);
 
+    // Check if client wants envelope format
+    const acceptHeader = request.headers.get("accept") || "";
+    const wantsEnvelope = acceptHeader.includes("application/vnd.envelope+json");
+
+    if (wantsEnvelope) {
+      return NextResponse.json({
+        envelope: responseEnvelope,
+        bucketId: targetBucketId,
+        isVoice,
+      });
+    }
+
+    // Extract payload for backward compatibility
     return NextResponse.json({
       response,
       bucketId: targetBucketId,
